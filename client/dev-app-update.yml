@@ -1,0 +1,7 @@
+# File ini digunakan untuk tes auto-update saat MODE DEV (npm run electron:dev)
+# Isi dengan info GitHub repo Anda setelah buat repository
+# Ganti dengan username dan nama repo GitHub Anda
+
+provider: github
+owner: 1oneGod1
+repo: labkom-releases

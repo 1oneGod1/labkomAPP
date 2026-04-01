@@ -1,0 +1,143 @@
+require('dotenv').config();
+const {
+  issueToken,
+  validateToken,
+  getTokenExpiry,
+  rotateToken,
+  revokeToken,
+  TOKEN_TTL_MS,
+} = require('../services/adminSessionService');
+const { checkAllowed, registerFailure, clearFailures } = require('../services/adminRateLimitService');
+const { logAdminAction } = require('../services/adminAuditService');
+
+function getRequestIp(req) {
+  const xff = req.headers['x-forwarded-for'];
+  if (typeof xff === 'string' && xff.trim()) return xff.split(',')[0].trim();
+  return req.ip || req.socket?.remoteAddress || 'unknown';
+}
+
+function readAdminPassword() {
+  return process.env.ADMIN_PASSWORD;
+}
+
+// POST /api/admin/verify-password
+function verifyPassword(req, res) {
+  const { password } = req.body;
+
+  if (!password) {
+    return res.status(400).json({ success: false, message: 'Password wajib diisi.' });
+  }
+
+  const adminPassword = readAdminPassword();
+  if (!adminPassword) {
+    return res.status(500).json({ success: false, message: 'Admin password belum dikonfigurasi di server.' });
+  }
+
+  if (password === adminPassword) {
+    console.log(`[ADMIN] Akses admin berhasil pada ${new Date().toLocaleString('id-ID')}`);
+    logAdminAction(req, { action: 'ADMIN_VERIFY_PASSWORD', statusCode: 200, success: true }).catch(() => {});
+    return res.status(200).json({ success: true, message: 'Password benar.' });
+  }
+
+  console.warn(`[ADMIN] Percobaan akses admin gagal pada ${new Date().toLocaleString('id-ID')}`);
+  logAdminAction(req, { action: 'ADMIN_VERIFY_PASSWORD', statusCode: 401, success: false }).catch(() => {});
+  return res.status(401).json({ success: false, message: 'Password salah.' });
+}
+
+// POST /api/admin/login
+function login(req, res) {
+  const { password } = req.body;
+  if (!password) {
+    return res.status(400).json({ success: false, message: 'Password wajib diisi.' });
+  }
+
+  const adminPassword = readAdminPassword();
+  if (!adminPassword) {
+    return res.status(500).json({ success: false, message: 'Admin password belum dikonfigurasi di server.' });
+  }
+
+  const ipKey = getRequestIp(req);
+  const rate = checkAllowed(ipKey);
+  if (!rate.allowed) {
+    logAdminAction(req, {
+      action: 'ADMIN_LOGIN_RATE_LIMITED',
+      statusCode: 429,
+      success: false,
+      metadata: { ip: ipKey, retry_after_sec: rate.retryAfterSec },
+    }).catch(() => {});
+    return res.status(429).json({
+      success: false,
+      message: `Terlalu banyak percobaan login. Coba lagi dalam ${rate.retryAfterSec} detik.`,
+    });
+  }
+
+  if (password !== adminPassword) {
+    registerFailure(ipKey);
+    logAdminAction(req, {
+      action: 'ADMIN_LOGIN',
+      statusCode: 401,
+      success: false,
+      metadata: { ip: ipKey },
+    }).catch(() => {});
+    return res.status(401).json({ success: false, message: 'Password admin salah.' });
+  }
+
+  clearFailures(ipKey);
+  const token = issueToken();
+  logAdminAction(req, {
+    action: 'ADMIN_LOGIN',
+    statusCode: 200,
+    success: true,
+    metadata: { ip: ipKey, token_ttl_ms: TOKEN_TTL_MS },
+  }).catch(() => {});
+  return res.status(200).json({
+    success: true,
+    message: 'Login admin berhasil.',
+    token,
+    expires_in_ms: TOKEN_TTL_MS,
+  });
+}
+
+// GET /api/admin/me
+function me(req, res) {
+  const authHeader = req.headers.authorization || '';
+  const match = authHeader.match(/^Bearer\s+(.+)$/i);
+  const token = match ? match[1] : null;
+
+  if (!validateToken(token)) {
+    logAdminAction(req, { action: 'ADMIN_ME', statusCode: 401, success: false }).catch(() => {});
+    return res.status(401).json({ success: false, message: 'Token admin tidak valid.' });
+  }
+
+  return res.status(200).json({
+    success: true,
+    expires_at: getTokenExpiry(token),
+  });
+}
+
+// POST /api/admin/logout
+function logout(req, res) {
+  const authHeader = req.headers.authorization || '';
+  const match = authHeader.match(/^Bearer\s+(.+)$/i);
+  const token = match ? match[1] : null;
+  revokeToken(token);
+  logAdminAction(req, { action: 'ADMIN_LOGOUT', statusCode: 200, success: true }).catch(() => {});
+  return res.status(200).json({ success: true, message: 'Logout admin berhasil.' });
+}
+
+// POST /api/admin/refresh
+function refreshToken(req, res) {
+  const token = req.adminToken;
+  const nextToken = rotateToken(token);
+  if (!nextToken) {
+    return res.status(401).json({ success: false, message: 'Token tidak valid atau kedaluwarsa.' });
+  }
+  logAdminAction(req, { action: 'ADMIN_REFRESH_TOKEN', statusCode: 200, success: true }).catch(() => {});
+  return res.status(200).json({
+    success: true,
+    token: nextToken,
+    expires_in_ms: TOKEN_TTL_MS,
+  });
+}
+
+module.exports = { verifyPassword, login, me, logout, refreshToken };

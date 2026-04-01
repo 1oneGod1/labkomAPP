@@ -1,0 +1,7 @@
+USE labkom_db;
+
+ALTER TABLE lab_computers
+  ADD COLUMN IF NOT EXISTS bound_hostname VARCHAR(100) NULL AFTER label,
+  ADD COLUMN IF NOT EXISTS bound_mac VARCHAR(50) NULL AFTER bound_hostname,
+  ADD COLUMN IF NOT EXISTS last_known_ip VARCHAR(45) NULL AFTER bound_mac,
+  ADD COLUMN IF NOT EXISTS mapped_at TIMESTAMP NULL DEFAULT NULL AFTER last_known_ip;
