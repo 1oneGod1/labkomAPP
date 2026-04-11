@@ -24,6 +24,7 @@ const controlRoutes    = require('./routes/control');
 const checksRoutes     = require('./routes/checks');
 const screensRoutes    = require('./routes/screens');
 const clientCmdRoutes  = require('./routes/clientcmd');
+const activitiesRoutes = require('./routes/activities');
 const { attachRealtimeHub } = require('./realtimeHub');
 
 const app  = express();
@@ -33,9 +34,21 @@ const server = http.createServer(app);
 // =====================
 // Middleware
 // =====================
-// Izinkan semua origin termasuk null (Electron file:// protocol)
+// CORS: Hanya izinkan localhost, LAN (192.168.x.x, 10.x.x.x), dan Electron (null origin)
+const ALLOWED_ORIGIN_PATTERNS = [
+  /^http:\/\/localhost(:\d+)?$/,
+  /^http:\/\/127\.0\.0\.1(:\d+)?$/,
+  /^http:\/\/192\.168\.\d{1,3}\.\d{1,3}(:\d+)?$/,
+  /^http:\/\/10\.\d{1,3}\.\d{1,3}\.\d{1,3}(:\d+)?$/,
+];
 app.use(cors({
-  origin: (origin, callback) => callback(null, true),
+  origin: (origin, callback) => {
+    // null origin = Electron file:// protocol atau same-origin
+    if (!origin) return callback(null, true);
+    if (ALLOWED_ORIGIN_PATTERNS.some(p => p.test(origin))) return callback(null, true);
+    console.warn(`[CORS] Blocked origin: ${origin}`);
+    callback(new Error('Not allowed by CORS'));
+  },
   credentials: true,
 }));
 app.use(express.json({ limit: '2mb' }));          // screenshots butuh ruang lebih
@@ -65,6 +78,7 @@ app.use('/api/control',    controlRoutes);
 app.use('/api/checks',     checksRoutes);
 app.use('/api/screens',    screensRoutes);
 app.use('/api/client-cmd', clientCmdRoutes);
+app.use('/api/activities', activitiesRoutes);
 
 // 404 handler
 app.use((_req, res) => {

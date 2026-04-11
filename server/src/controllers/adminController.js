@@ -1,4 +1,5 @@
 require('dotenv').config();
+const bcrypt = require('bcrypt');
 const {
   issueToken,
   validateToken,
@@ -20,8 +21,20 @@ function readAdminPassword() {
   return process.env.ADMIN_PASSWORD;
 }
 
+/**
+ * Compare input password with admin password.
+ * Supports both bcrypt hash ($2b$...) and plain-text in .env (backward compat).
+ */
+async function compareAdminPassword(input, stored) {
+  if (stored.startsWith('$2b$') || stored.startsWith('$2a$')) {
+    return bcrypt.compare(input, stored);
+  }
+  // Fallback: plain-text comparison (backward compatibility)
+  return input === stored;
+}
+
 // POST /api/admin/verify-password
-function verifyPassword(req, res) {
+async function verifyPassword(req, res) {
   const { password } = req.body;
 
   if (!password) {
@@ -33,7 +46,8 @@ function verifyPassword(req, res) {
     return res.status(500).json({ success: false, message: 'Admin password belum dikonfigurasi di server.' });
   }
 
-  if (password === adminPassword) {
+  const match = await compareAdminPassword(password, adminPassword);
+  if (match) {
     console.log(`[ADMIN] Akses admin berhasil pada ${new Date().toLocaleString('id-ID')}`);
     logAdminAction(req, { action: 'ADMIN_VERIFY_PASSWORD', statusCode: 200, success: true }).catch(() => {});
     return res.status(200).json({ success: true, message: 'Password benar.' });
@@ -45,7 +59,7 @@ function verifyPassword(req, res) {
 }
 
 // POST /api/admin/login
-function login(req, res) {
+async function login(req, res) {
   const { password } = req.body;
   if (!password) {
     return res.status(400).json({ success: false, message: 'Password wajib diisi.' });
@@ -71,7 +85,8 @@ function login(req, res) {
     });
   }
 
-  if (password !== adminPassword) {
+  const match = await compareAdminPassword(password, adminPassword);
+  if (!match) {
     registerFailure(ipKey);
     logAdminAction(req, {
       action: 'ADMIN_LOGIN',

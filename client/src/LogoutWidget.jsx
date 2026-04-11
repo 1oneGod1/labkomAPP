@@ -197,7 +197,7 @@ export default function LogoutWidget({ studentData, onRequestPostCheck, onLogout
 
   return (
     // Container transparan — window Electron sudah diposisikan di pojok kanan bawah
-    <div className="w-full h-full flex items-end justify-end bg-transparent p-0">
+    <div className="w-full h-full flex items-start justify-end bg-transparent p-0">
       <div className="w-full h-full bg-slate-900/90 backdrop-blur-xl border border-slate-700/50 rounded-2xl shadow-2xl overflow-hidden flex flex-col">
 
         {/* ── Header ──────────────────────────────────────────── */}

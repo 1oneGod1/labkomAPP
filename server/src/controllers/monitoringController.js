@@ -1,4 +1,4 @@
-const db = require('../config/database');
+const firebaseService = require('../services/firebaseService');
 const {
   normalizePcName,
   normalizeMac,
@@ -20,7 +20,9 @@ function formatDuration(minutes) {
 
 function toLocaleTime(value) {
   if (!value) return null;
-  return new Date(value).toLocaleTimeString('id-ID', {
+  // Handle Firestore Timestamps
+  const date = value.toDate ? value.toDate() : new Date(value);
+  return date.toLocaleTimeString('id-ID', {
     hour: '2-digit',
     minute: '2-digit',
   });
@@ -47,6 +49,13 @@ function buildPcCard({
     boundHostname ||
     pcName;
 
+  // Calculate duration if session is active
+  let durationMinutes = session?.duration_minutes || 0;
+  if (session && !durationMinutes && session.login_time) {
+    const loginTime = session.login_time.toDate ? session.login_time.toDate() : new Date(session.login_time);
+    durationMinutes = Math.floor((Date.now() - loginTime.getTime()) / 1000 / 60);
+  }
+
   return {
     id: pcName,
     label,
@@ -70,8 +79,8 @@ function buildPcCard({
         }
       : null,
     loginTime: toLocaleTime(session?.login_time),
-    duration: formatDuration(session?.duration_minutes),
-    session_id: session?.session_id || null,
+    duration: formatDuration(durationMinutes),
+    session_id: session?.id || session?.session_id || null,
   };
 }
 
@@ -79,21 +88,8 @@ async function getPcs(_req, res) {
   try {
     const labRows = await getLabComputers();
 
-    const [sessionRows] = await db.query(`
-      SELECT
-        s.id AS session_id,
-        s.pc_name,
-        s.login_time,
-        TIMESTAMPDIFF(MINUTE, s.login_time, NOW()) AS duration_minutes,
-        st.id AS student_id,
-        st.nis,
-        st.nama_lengkap,
-        st.kelas
-      FROM sessions s
-      JOIN students st ON st.id = s.student_id
-      WHERE s.status = 'active'
-      ORDER BY s.pc_name
-    `);
+    // Get active sessions from Firebase
+    const sessionRows = await firebaseService.sessions.getActive();
 
     const presenceRows = getClientRegistry();
     const sessionByPc = new Map(sessionRows.map((row) => [normalizePcName(row.pc_name), row]));
@@ -240,18 +236,14 @@ async function forceLogoutPc(req, res) {
   if (!pc_name) return res.status(400).json({ success: false, message: 'pc_name wajib diisi.' });
 
   try {
-    const [result] = await db.query(
-      `UPDATE sessions SET logout_time = NOW(), status = 'force_ended'
-       WHERE pc_name = ? AND status = 'active'`,
-      [pc_name]
-    );
+    const affected = await firebaseService.sessions.forceLogoutByPcName(pc_name);
 
     return res.json({
       success: true,
-      message: result.affectedRows > 0
+      message: affected > 0
         ? `Sesi di ${pc_name} berhasil dihentikan.`
         : `Tidak ada sesi aktif di ${pc_name}.`,
-      affected: result.affectedRows,
+      affected,
     });
   } catch (err) {
     console.error('[MONITORING] forceLogoutPc error:', err);
@@ -261,14 +253,11 @@ async function forceLogoutPc(req, res) {
 
 async function forceLogoutAll(_req, res) {
   try {
-    const [result] = await db.query(
-      `UPDATE sessions SET logout_time = NOW(), status = 'force_ended'
-       WHERE status = 'active'`
-    );
+    const affected = await firebaseService.sessions.forceLogoutAll();
     return res.json({
       success: true,
-      message: `${result.affectedRows} sesi aktif dihentikan.`,
-      affected: result.affectedRows,
+      message: `${affected} sesi aktif dihentikan.`,
+      affected,
     });
   } catch (err) {
     console.error('[MONITORING] forceLogoutAll error:', err);

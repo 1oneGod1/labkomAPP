@@ -7,9 +7,11 @@ import {
   RefreshCw, Loader2, Save, ChevronLeft, ChevronRight,
   Wifi, WifiOff, Server, Copy, Check, DownloadCloud, Bell, Zap,
   ClipboardList, FilterX, ThumbsUp, ThumbsDown, Eye, EyeOff, Maximize2,
-  PowerOff, Play, Radio, Cpu,
+  PowerOff, Play, Radio, Cpu, Activity, MessageCircle,
 } from 'lucide-react';
 import StudentModal from './components/StudentModal.jsx';
+import ActivityMonitor from './components/ActivityMonitor.jsx';
+import ChatPanel from './components/ChatPanel.jsx';
 
 // Di Electron production, window load dari file:// sehingga fetch relatif gagal.
 // Deteksi protokol: file:// → pakai absolute URL ke server lokal.
@@ -2042,6 +2044,8 @@ export default function AdminDashboard() {
             { id: 'students',   label: 'Data Siswa',           icon: Users          },
             { id: 'history',    label: 'Riwayat Sesi',         icon: History        },
             { id: 'checks',     label: 'Pengecekan Fasilitas', icon: ClipboardList  },
+            { id: 'activities', label: 'Aktivitas Siswa',      icon: Activity       },
+            { id: 'chat',       label: 'Pesan & Chat',         icon: MessageCircle  },
             { id: 'server',     label: 'Status Server',        icon: Server         },
           ].map(({ id, label, icon: Icon }) => (
             <button
@@ -2090,6 +2094,8 @@ export default function AdminDashboard() {
               {activeTab === 'students'  && 'Manajemen Data Siswa'}
               {activeTab === 'history'   && 'Riwayat Sesi Praktikum'}
               {activeTab === 'checks'    && 'Log Pengecekan Fasilitas'}
+              {activeTab === 'activities' && 'Monitoring Aktivitas Siswa'}
+              {activeTab === 'chat'       && 'Pesan & Komunikasi'}
               {activeTab === 'server'     && 'Status Server'}
             </h2>
             <p className="text-sm text-slate-500 mt-0.5">Mengelola akses dan data aktivitas lab komputer.</p>
@@ -2123,8 +2129,11 @@ export default function AdminDashboard() {
           {activeTab === 'students'  && renderStudents()}
           {activeTab === 'history'   && renderHistory()}
           {activeTab === 'checks'    && renderChecks()}
+          {activeTab === 'activities' && <ActivityMonitor serverUrl={API} socket={realtimeSocketRef.current} />}
+          {activeTab === 'chat'       && <ChatPanel socket={realtimeSocketRef.current} />}
           {activeTab === 'server'     && renderServer()}
-        </div>      </main>
+        </div>
+      </main>
 
       {/* ─── MODAL: Kontrol Individual PC ────────────────────────────────── */}
       {controlModalPc && (

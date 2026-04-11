@@ -1,6 +1,5 @@
-const db = require('../config/database');
-
-let warnedMissingTable = false;
+const { isFirestoreAvailable } = require('./firebaseService');
+const admin = require('firebase-admin');
 
 function getIp(req) {
   const xff = req.headers['x-forwarded-for'];
@@ -19,27 +18,24 @@ async function logAdminAction(req, payload = {}) {
   } = payload;
 
   try {
-    await db.query(
-      `INSERT INTO admin_audit_logs
-        (action, method, path, status_code, success, ip_address, user_agent, metadata_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        action,
-        req.method,
-        req.originalUrl,
-        statusCode,
-        success,
-        getIp(req),
-        req.headers['user-agent'] || null,
-        metadata ? JSON.stringify(metadata) : null,
-      ]
-    );
-  } catch (err) {
-    if (!warnedMissingTable && (err.code === 'ER_NO_SUCH_TABLE' || err.errno === 1146)) {
-      warnedMissingTable = true;
-      console.warn('[AUDIT] Tabel admin_audit_logs belum ada. Jalankan migration-v3-security.sql.');
+    if (!isFirestoreAvailable()) {
+      console.warn('[AUDIT] Firestore not available, skipping audit log.');
       return;
     }
+
+    const db = admin.firestore();
+    await db.collection('admin_audit_logs').add({
+      action,
+      method: req.method,
+      path: req.originalUrl,
+      status_code: statusCode,
+      success,
+      ip_address: getIp(req),
+      user_agent: req.headers['user-agent'] || null,
+      metadata: metadata || null,
+      created_at: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  } catch (err) {
     console.warn('[AUDIT] Gagal simpan log admin:', err.message);
   }
 }

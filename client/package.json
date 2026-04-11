@@ -10,6 +10,7 @@
     "electron:build": "set \"ELECTRON_RUN_AS_NODE=\" && npm.cmd run build:react && electron-builder"
   },
   "dependencies": {
+    "active-win": "^8.1.0",
     "electron-log": "^5.4.3",
     "electron-updater": "^6.8.3",
     "lucide-react": "^0.446.0",
@@ -58,7 +59,7 @@
       {
         "provider": "github",
         "owner": "1oneGod1",
-        "repo": "labkom-releases",
+        "repo": "labkomAPP",
         "private": false
       }
     ]

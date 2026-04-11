@@ -4,8 +4,9 @@ const path            = require('path');
 const fs              = require('fs');
 const http            = require('http');
 const dgram           = require('dgram');
-const { execSync }    = require('child_process');
+const { execSync, spawn } = require('child_process');
 const { io }          = require('socket.io-client');
+const ActivityMonitor = require('./activityMonitor');
 
 // â”€â”€ Chromium flags: izinkan fetch dari file:// ke http:// LAN â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 app.commandLine.appendSwitch('disable-web-security');
@@ -65,7 +66,7 @@ let presenceHeartbeatTimer = null;
 autoUpdater.logger         = log;
 autoUpdater.logger.transports.file.level = 'info';
 autoUpdater.autoDownload   = true;   // Langsung download kalau ada update
-autoUpdater.autoInstallOnAppQuit = false; // Hindari install otomatis saat quit tak disengaja
+autoUpdater.autoInstallOnAppQuit = true;  // Install otomatis saat app ditutup/restart
 
 autoUpdater.on('update-downloaded', () => {
   log.info('[CLIENT UPDATE] Update didownload, akan diinstall saat app ditutup.');
@@ -102,8 +103,142 @@ function saveServerConfig(data) {
 
 let mainWindow;
 let focusRecoveryTimer = null;
+let aggressiveFocusInterval = null;
 let screenShareTimer   = null;
 let screenCaptureInFlight = false;
+
+// ── Windows Keyboard Hook (blokir Alt+Tab di level OS) ──────────────────────
+let kbHookProcess = null;
+let kbHookFlagPath = null;
+
+function startKeyboardHook() {
+  if (process.platform !== 'win32') return;
+  if (kbHookProcess) return; // Sudah berjalan
+
+  try {
+    // Tentukan path script PS1
+    const ps1Path = app.isPackaged
+      ? path.join(path.dirname(process.execPath), 'resources', 'electron', 'blockAltTab.ps1')
+      : path.join(__dirname, 'blockAltTab.ps1');
+
+    if (!fs.existsSync(ps1Path)) {
+      log.warn('[KIOSK] blockAltTab.ps1 tidak ditemukan di:', ps1Path);
+      return;
+    }
+
+    // File flag untuk menghentikan hook
+    kbHookFlagPath = path.join(app.getPath('userData'), 'kbhook-stop.flag');
+    // Hapus flag lama kalau ada
+    try { if (fs.existsSync(kbHookFlagPath)) fs.unlinkSync(kbHookFlagPath); } catch {}
+
+    // Dapatkan PID Electron untuk dikirim ke PS1 agar bisa force-focus window
+    const electronPID = process.pid;
+
+    kbHookProcess = spawn('powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-WindowStyle', 'Hidden',
+      '-ExecutionPolicy', 'Bypass',
+      '-File', ps1Path,
+      '-FlagFile', kbHookFlagPath,
+      '-ElectronPID', String(electronPID),
+    ], {
+      detached: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    kbHookProcess.stdout?.on('data', (d) => log.info('[KBHOOK stdout]', d.toString().trim()));
+    kbHookProcess.stderr?.on('data', (d) => log.warn('[KBHOOK stderr]', d.toString().trim()));
+
+    kbHookProcess.on('exit', (code) => {
+      log.info('[KIOSK] Keyboard hook process keluar, kode:', code);
+      kbHookProcess = null;
+      // Otomatis restart jika masih dalam mode lock
+      if (isKioskLocked()) {
+        log.info('[KIOSK] Keyboard hook keluar saat masih lock, restart...');
+        setTimeout(() => startKeyboardHook(), 500);
+      }
+    });
+
+    kbHookProcess.on('error', (err) => {
+      log.warn('[KIOSK] Gagal menjalankan keyboard hook:', err.message);
+      kbHookProcess = null;
+    });
+
+    log.info('[KIOSK] Windows keyboard hook dimulai (PID:', kbHookProcess.pid, '), script:', ps1Path);
+  } catch (err) {
+    log.warn('[KIOSK] Error saat memulai keyboard hook:', err.message);
+    kbHookProcess = null;
+  }
+}
+
+function stopKeyboardHook() {
+  if (process.platform !== 'win32') return;
+
+  // Kirim sinyal stop via flag file
+  if (kbHookFlagPath) {
+    try { fs.writeFileSync(kbHookFlagPath, 'stop', 'utf-8'); } catch {}
+  }
+
+  // Kill proses jika masih berjalan setelah 1 detik
+  if (kbHookProcess) {
+    setTimeout(() => {
+      if (kbHookProcess) {
+        try { kbHookProcess.kill(); } catch {}
+        kbHookProcess = null;
+      }
+    }, 1000);
+  }
+
+  log.info('[KIOSK] Windows keyboard hook dihentikan');
+}
+
+// ── Windows Taskbar Hide/Show (sembunyikan taskbar saat lock) ──────────────
+let taskbarHideScript = null;
+
+function getTaskbarScriptPath() {
+  if (taskbarHideScript) return taskbarHideScript;
+  const scriptDir = app.isPackaged
+    ? path.join(path.dirname(process.execPath), 'resources', 'electron')
+    : __dirname;
+  taskbarHideScript = path.join(app.getPath('userData'), 'taskbar-ctl.ps1');
+  // Tulis script sekali
+  const ps1 = `
+param([string]$Action = "hide")
+Add-Type -Name TBCtl -Namespace Win32 -MemberDefinition @'
+[DllImport("user32.dll")] public static extern IntPtr FindWindow(string cls, string wnd);
+[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+'@
+$sw = if ($Action -eq "show") { 5 } else { 0 }
+$h = [Win32.TBCtl]::FindWindow("Shell_TrayWnd","")
+if ($h -ne [IntPtr]::Zero) { [Win32.TBCtl]::ShowWindow($h, $sw) | Out-Null }
+$h2 = [Win32.TBCtl]::FindWindow("Shell_SecondaryTrayWnd","")
+if ($h2 -ne [IntPtr]::Zero) { [Win32.TBCtl]::ShowWindow($h2, $sw) | Out-Null }
+`;
+  try { fs.writeFileSync(taskbarHideScript, ps1, 'utf-8'); } catch {}
+  return taskbarHideScript;
+}
+
+function hideTaskbar() {
+  if (process.platform !== 'win32') return;
+  try {
+    const script = getTaskbarScriptPath();
+    spawn('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden',
+      '-ExecutionPolicy', 'Bypass', '-File', script, '-Action', 'hide'
+    ], { detached: true, stdio: 'ignore' });
+  } catch {}
+  log.info('[KIOSK] Taskbar disembunyikan');
+}
+
+function showTaskbar() {
+  if (process.platform !== 'win32') return;
+  try {
+    const script = getTaskbarScriptPath();
+    execSync(`powershell -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${script}" -Action show`, { timeout: 5000 });
+  } catch {}
+  log.info('[KIOSK] Taskbar ditampilkan kembali');
+}
 const screenShareState = {
   active:      false,
   lastErrorAt: 0,
@@ -111,6 +246,9 @@ const screenShareState = {
   studentName: null,
   pcName:      os.hostname(),
 };
+
+// â"€â"€ Activity Monitor Instance â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+let activityMonitor = null;
 const CAPTURE_PROFILES = {
   overview: {
     mode: 'overview',
@@ -137,9 +275,9 @@ const SIZES = {
   checklist:  { width: 780, height: 840 },  // Untuk form checklist pre/post sesi
 };
 
-function getBottomRight(w, h) {
-  const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize;
-  return { x: sw - w - 20, y: sh - h - 20 };
+function getTopRight(w, h) {
+  const { width: sw } = screen.getPrimaryDisplay().workAreaSize;
+  return { x: sw - w - 20, y: 20 };
 }
 
 function getCenter(w, h) {
@@ -148,31 +286,39 @@ function getCenter(w, h) {
 }
 
 function isKioskLocked() {
-  return Boolean(mainWindow && mainWindow.isKiosk() && mainWindow.isFullScreen());
+  return Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isKiosk() && mainWindow.isFullScreen());
 }
 
 function keepWindowVisible() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
 
   try {
-    mainWindow.setAlwaysOnTop(true, 'screen-saver');
+    // Set always on top dengan level tertinggi
+    mainWindow.setAlwaysOnTop(true, 'screen-saver', 1);
     mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
     if (isKioskLocked()) {
+      // Mode kiosk: super aggressive focus recovery
+      mainWindow.setKiosk(true);
+      mainWindow.setFullScreen(true);
+      mainWindow.restore();
       mainWindow.show();
       mainWindow.focus();
       mainWindow.moveTop();
-      mainWindow.setKiosk(true);
-      mainWindow.setFullScreen(true);
       
-      // Force focus kembali dengan lebih agresif
+      // Force focus dengan teknik ganda
       if (process.platform === 'win32') {
         mainWindow.blur();
         mainWindow.focus();
+        
+        // Tambahan: set level always on top lebih tinggi
+        mainWindow.setAlwaysOnTop(false);
+        mainWindow.setAlwaysOnTop(true, 'screen-saver', 1);
       }
       return;
     }
 
+    // Mode widget: recovery normal
     if (mainWindow.isMinimized()) mainWindow.restore();
     if (typeof mainWindow.showInactive === 'function') {
       mainWindow.showInactive();
@@ -206,8 +352,41 @@ function requestControlledQuit(reason) {
     mainWindow.setClosable(true);
     mainWindow.setKiosk(false);
   }
+  stopAggressiveFocusLoop();
+  stopKeyboardHook();
+  showTaskbar(); // Selalu pulihkan taskbar saat quit
   globalShortcut.unregisterAll();
   app.quit();
+}
+
+function startAggressiveFocusLoop() {
+  if (aggressiveFocusInterval) return;
+  
+  // Loop yang terus-menerus memaksa window tetap di depan saat lock mode
+  // Interval 50ms: sangat agresif agar user tidak sempat lihat jendela lain
+  aggressiveFocusInterval = setInterval(() => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    
+    if (isKioskLocked()) {
+      // Pastikan window selalu di depan dan fullscreen
+      if (!mainWindow.isFocused()) {
+        keepWindowVisible();
+      }
+      // Pastikan kiosk dan fullscreen tetap aktif
+      if (!mainWindow.isKiosk()) mainWindow.setKiosk(true);
+      if (!mainWindow.isFullScreen()) mainWindow.setFullScreen(true);
+    }
+  }, 50); // Setiap 50ms cek dan pulihkan fokus
+  
+  log.info('[KIOSK] Aggressive focus loop dimulai');
+}
+
+function stopAggressiveFocusLoop() {
+  if (!aggressiveFocusInterval) return;
+  
+  clearInterval(aggressiveFocusInterval);
+  aggressiveFocusInterval = null;
+  log.info('[KIOSK] Aggressive focus loop dihentikan');
 }
 
 function applyWindowLayout(mode = 'regular') {
@@ -220,15 +399,25 @@ function applyWindowLayout(mode = 'regular') {
     mainWindow.setBounds(screen.getPrimaryDisplay().bounds, true);
     mainWindow.setKiosk(true);
     mainWindow.setFullScreen(true);
+    
+    // Mulai aggressive focus loop dan keyboard hook untuk mode lock
+    startAggressiveFocusLoop();
+    startKeyboardHook();
+    hideTaskbar();
   } else {
     const size = SIZES[mode] || SIZES.regular;
     const { x, y } = mode === 'checklist'
       ? getCenter(size.width, size.height)
-      : getBottomRight(size.width, size.height);
+      : getTopRight(size.width, size.height);
 
     mainWindow.setKiosk(false);
     mainWindow.setFullScreen(false);
     mainWindow.setBounds({ x, y, width: size.width, height: size.height }, true);
+    
+    // Hentikan aggressive focus loop dan keyboard hook untuk mode widget
+    stopAggressiveFocusLoop();
+    stopKeyboardHook();
+    showTaskbar();
   }
 
   mainWindow.setResizable(false);
@@ -328,9 +517,42 @@ function createWindow() {
 
   // â”€â”€ Cegah buka jendela baru â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+
+  // ── Blokir Alt+F4 dan shortcut berbahaya di level webContents ─────────
+  // globalShortcut TIDAK bisa menangkap Alt+F4 saat window fokus di Windows.
+  // before-input-event menangkap keystroke SEBELUM Chromium/OS memprosesnya.
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (allowAppQuit) return;
+
+    const alt  = input.alt;
+    const ctrl = input.control;
+    const meta = input.meta;
+    const key  = (input.key || '').toLowerCase();
+
+    // Blokir Alt+F4
+    if (alt && key === 'f4') { event.preventDefault(); return; }
+    // Blokir Ctrl+W (close tab/window)
+    if (ctrl && key === 'w') { event.preventDefault(); return; }
+    // Blokir Ctrl+F4
+    if (ctrl && key === 'f4') { event.preventDefault(); return; }
+    // Blokir Ctrl+Shift+Esc (Task Manager)
+    if (ctrl && input.shift && key === 'escape') { event.preventDefault(); return; }
+    // Blokir F11 (toggle fullscreen)
+    if (!ctrl && !alt && key === 'f11') { event.preventDefault(); return; }
+    // Blokir Alt+Esc
+    if (alt && key === 'escape') { event.preventDefault(); return; }
+    // Blokir Win key combinations
+    if (meta) { event.preventDefault(); return; }
+  });
+
   mainWindow.on('close', (event) => {
     if (allowAppQuit) return;
     event.preventDefault();
+    // Paksa tampil kembali
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show();
+      mainWindow.focus();
+    }
     scheduleFocusRecovery(0);
   });
 
@@ -605,7 +827,26 @@ ipcMain.on('login-success', (_event, studentData) => {
 
   // Mulai screen share
   const cfg = loadServerConfig();
-  if (cfg.serverUrl) startScreenShare(cfg.serverUrl, studentData?.nama_lengkap);
+  if (cfg.serverUrl) {
+    startScreenShare(cfg.serverUrl, studentData?.nama_lengkap);
+    
+    // Start Activity Monitoring
+    if (activityMonitor) {
+      activityMonitor.stop();
+      activityMonitor = null;
+    }
+    
+    activityMonitor = new ActivityMonitor({
+      socket: realtimeSocket,
+      studentId: studentData?.id,
+      studentName: studentData?.nama_lengkap,
+      pcName: screenShareState.pcName,
+      sessionId: studentData?.sessionId || null,
+    });
+    
+    activityMonitor.start();
+    log.info('[ACTIVITY] Monitoring dimulai untuk', studentData?.nama_lengkap);
+  }
 });
 
 // â”€â”€ IPC: Resize widget dari React â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -619,7 +860,14 @@ ipcMain.on('resize-window', (_event, mode) => {
 ipcMain.on('do-logout', () => {
   if (!mainWindow) return;
 
-  stopScreenShare(); // â† hentikan screen share
+  stopScreenShare(); // ← hentikan screen share
+  
+  // Stop Activity Monitoring
+  if (activityMonitor) {
+    activityMonitor.stop();
+    activityMonitor = null;
+    log.info('[ACTIVITY] Monitoring dihentikan');
+  }
 
   applyWindowLayout('login');
   scheduleFocusRecovery(50);
@@ -945,6 +1193,15 @@ app.on('will-quit', () => {
   stopDiscoveryListener();
   stopPresenceHeartbeat();
   disconnectRealtime();
+  stopKeyboardHook();
+  showTaskbar(); // Safety net: selalu pulihkan taskbar
   if (cmdPollTimer) { clearInterval(cmdPollTimer); cmdPollTimer = null; }
+  
+  // Cleanup Activity Monitor
+  if (activityMonitor) {
+    activityMonitor.stop();
+    activityMonitor = null;
+  }
+  
   globalShortcut.unregisterAll();
 });

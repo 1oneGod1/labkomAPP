@@ -1,6 +1,6 @@
 const bcrypt     = require('bcrypt');
-const db         = require('../config/database');
 const os         = require('os');
+const firebaseService = require('../services/firebaseService');
 const { getClientRegistry, normalizePcName } = require('../services/clientRegistryService');
 const { resolveMappedLabPc } = require('../services/labComputerService');
 
@@ -14,16 +14,11 @@ async function login(req, res) {
 
   try {
     // 1. Cari siswa berdasarkan NIS
-    const [rows] = await db.query(
-      'SELECT * FROM students WHERE nis = ? LIMIT 1',
-      [nis]
-    );
+    const student = await firebaseService.students.getByNis(nis);
 
-    if (rows.length === 0) {
+    if (!student) {
       return res.status(401).json({ success: false, message: 'NIS tidak ditemukan.' });
     }
-
-    const student = rows[0];
 
     // 2. Cek apakah akun aktif
     if (!student.is_active) {
@@ -41,23 +36,15 @@ async function login(req, res) {
     });
     const pcName = mappedLabPc?.pc_name || reportedPcName;
     const cleanupPcNames = Array.from(new Set([reportedPcName, pcName].filter(Boolean)));
-    const cleanupPlaceholders = cleanupPcNames.map(() => '?').join(', ');
-    await db.query(
-      `UPDATE sessions SET logout_time = NOW(), status = 'finished'
-       WHERE pc_name IN (${cleanupPlaceholders}) AND status = 'active'`,
-      cleanupPcNames
-    );
+    await firebaseService.sessions.closeActiveByPcNames(cleanupPcNames);
 
     // 4. Cek apakah akun ini masih aktif di PC LAIN
-    const [activeSessions] = await db.query(
-      'SELECT * FROM sessions WHERE student_id = ? AND status = "active" LIMIT 1',
-      [student.id]
-    );
+    const activeSession = await firebaseService.sessions.getActiveByStudentId(student.id);
 
-    if (activeSessions.length > 0) {
+    if (activeSession) {
       return res.status(409).json({
         success: false,
-        message: `Akun ini masih aktif di ${activeSessions[0].pc_name}. Hubungi guru untuk logout paksa.`,
+        message: `Akun ini masih aktif di ${activeSession.pc_name}. Hubungi guru untuk logout paksa.`,
       });
     }
 
@@ -68,16 +55,19 @@ async function login(req, res) {
     }
 
     // 6. Buat session baru
-    const [result] = await db.query(
-      'INSERT INTO sessions (student_id, pc_name, status) VALUES (?, ?, "active")',
-      [student.id, pcName]
-    );
+    const session = await firebaseService.sessions.create({
+      student_id: student.id,
+      pc_name: pcName,
+      nis: student.nis,
+      nama_lengkap: student.nama_lengkap,
+      kelas: student.kelas,
+    });
 
     return res.status(200).json({
       success: true,
       message: `Selamat datang, ${student.nama_lengkap}!`,
       data: {
-        session_id:   result.insertId,
+        session_id:   session.id,
         student_id:   student.id,
         nis:          student.nis,
         nama_lengkap: student.nama_lengkap,
@@ -102,14 +92,9 @@ async function logout(req, res) {
   }
 
   try {
-    const [result] = await db.query(
-      `UPDATE sessions
-       SET logout_time = NOW(), status = 'finished'
-       WHERE id = ? AND status = 'active'`,
-      [session_id]
-    );
+    const result = await firebaseService.sessions.endSession(session_id, 'finished');
 
-    if (result.affectedRows === 0) {
+    if (!result) {
       return res.status(404).json({ success: false, message: 'Sesi tidak ditemukan atau sudah selesai.' });
     }
 
@@ -130,18 +115,15 @@ async function forceLogout(req, res) {
   }
 
   try {
-    let query, params;
+    let affected = 0;
     if (student_id) {
-      query  = `UPDATE sessions SET logout_time = NOW(), status = 'force_ended' WHERE student_id = ? AND status = 'active'`;
-      params = [student_id];
+      affected = await firebaseService.sessions.forceLogoutByStudentId(student_id);
     } else {
-      query  = `UPDATE sessions SET logout_time = NOW(), status = 'force_ended' WHERE pc_name = ? AND status = 'active'`;
-      params = [pc_name];
+      affected = await firebaseService.sessions.forceLogoutByPcName(pc_name);
     }
-    const [result] = await db.query(query, params);
     return res.status(200).json({
       success: true,
-      message: `${result.affectedRows} sesi berhasil di-logout paksa.`,
+      message: `${affected} sesi berhasil di-logout paksa.`,
     });
   } catch (err) {
     console.error('[FORCE LOGOUT ERROR]', err);
@@ -153,21 +135,25 @@ async function forceLogout(req, res) {
 async function checkStatus(req, res) {
   const { nis } = req.params;
   try {
-    const [rows] = await db.query(
-      `SELECT s.id, s.pc_name, s.login_time, s.status
-       FROM sessions s
-       JOIN students st ON s.student_id = st.id
-       WHERE st.nis = ? AND s.status = 'active'
-       LIMIT 1`,
-      [nis]
-    );
-    if (rows.length === 0) {
+    const student = await firebaseService.students.getByNis(nis);
+    if (!student) {
       return res.status(200).json({ success: true, is_online: false });
     }
+
+    const activeSession = await firebaseService.sessions.getActiveByStudentId(student.id);
+    if (!activeSession) {
+      return res.status(200).json({ success: true, is_online: false });
+    }
+
     return res.status(200).json({
       success:    true,
       is_online:  true,
-      session:    rows[0],
+      session: {
+        id: activeSession.id,
+        pc_name: activeSession.pc_name,
+        login_time: activeSession.login_time,
+        status: activeSession.status,
+      },
     });
   } catch (err) {
     console.error('[CHECK STATUS ERROR]', err);

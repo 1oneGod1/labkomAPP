@@ -386,6 +386,12 @@ function createWindow() {
       mainWindow.center();
     }
   });
+
+  // Tampilkan window saat sudah siap di-render
+  mainWindow.once('ready-to-show', () => {
+    mainWindow.show();
+    mainWindow.focus();
+  });
 }
 
 // ─── IPC Handlers ───────────────────────────────────────────────────────────

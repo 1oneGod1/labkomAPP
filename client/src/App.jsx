@@ -1,9 +1,12 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Monitor, User, Key, Wifi, WifiOff, AlertCircle, Server, ArrowRight, RefreshCw } from 'lucide-react';
+import { io } from 'socket.io-client';
 import LogoutWidget from './LogoutWidget.jsx';
 import AdminExitDialog from './AdminExitDialog.jsx';
 import CheckConditionForm from './CheckConditionForm.jsx';
 import PostSessionCheck from './PostSessionCheck.jsx';
+import AttentionModeOverlay from './AttentionModeOverlay.jsx';
+import ChatBubble from './ChatBubble.jsx';
 import { apiCall } from './api.js';
 
 // ── Mode layar ──────────────────────────────────────────────────────
@@ -37,7 +40,9 @@ export default function App() {
   const [showAdminDialog, setShowAdminDialog] = useState(false);
   const [cornerClicks,   setCornerClicks]   = useState(0);
   const [discoveredServers, setDiscoveredServers] = useState([]);
+  const [attentionMode,  setAttentionMode]  = useState({ enabled: false, message: '' });
   const autoSwitchingServerRef = useRef(false);
+  const socketRef = useRef(null);
 
   const persistServerUrl = useCallback((nextUrl) => {
     const normalized = nextUrl?.trim().replace(/\/$/, '');
@@ -191,6 +196,60 @@ export default function App() {
       window.electronAPI?.removeAllListeners('show-admin-dialog');
     };
   }, []);
+
+  // ── Socket.io Connection untuk Attention Mode ──────────────────
+  useEffect(() => {
+    // Hanya connect socket setelah ada serverUrl dan sudah melewati loading/setup
+    if (!serverUrl || mode === MODE_LOADING || mode === MODE_SETUP) {
+      // Disconnect socket jika belum siap
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+        socketRef.current = null;
+      }
+      return;
+    }
+
+    // Connect socket untuk listen attention mode dari admin
+    const socket = io(serverUrl, {
+      transports: ['websocket', 'polling'],
+      auth: { role: 'client' },
+      reconnection: true,
+      reconnectionDelay: 1000,
+      reconnectionAttempts: 5,
+    });
+
+    socketRef.current = socket;
+
+    // Listen for attention mode from admin
+    socket.on('attention-mode', (payload) => {
+      console.log('[Attention Mode] Received:', payload);
+      setAttentionMode({
+        enabled: payload.enabled,
+        message: payload.message || 'Mohon perhatian ke instruktur',
+      });
+    });
+
+    socket.on('connect', () => {
+      console.log('[Socket] Connected to server for attention mode');
+    });
+
+    socket.on('disconnect', () => {
+      console.log('[Socket] Disconnected from server');
+      // Auto-disable attention mode saat disconnect
+      setAttentionMode({ enabled: false, message: '' });
+    });
+
+    socket.on('connect_error', (error) => {
+      console.error('[Socket] Connection error:', error);
+    });
+
+    return () => {
+      if (socket) {
+        socket.disconnect();
+      }
+      socketRef.current = null;
+    };
+  }, [serverUrl, mode]);
 
   // ── Klik 5x pojok kiri bawah → buka dialog admin ────────────────
   const handleCornerClick = useCallback(() => {
@@ -447,24 +506,32 @@ export default function App() {
   // ── Mode Widget (pasca-login) ────────────────────────────────────
   if (mode === MODE_WIDGET) {
     return (
-      <LogoutWidget
-        studentData={studentData}
-        onRequestPostCheck={() => {
-          // Perluas jendela ke ukuran checklist sebelum tampilkan form post-sesi
-          window.electronAPI?.resizeWindow('checklist');
-          setMode(MODE_POSTCHECK);
-        }}
-        onLogoutComplete={() => {
-          // Fallback jika tidak pakai Electron (browser dev)
-          if (!window.electronAPI?.doLogout) {
-            setMode(MODE_LOGIN);
-            setNis('');
-            setPassword('');
-            setError('');
-            setStudentData(null);
-          }
-        }}
-      />
+      <>
+        <LogoutWidget
+          studentData={studentData}
+          onRequestPostCheck={() => {
+            // Perluas jendela ke ukuran checklist sebelum tampilkan form post-sesi
+            window.electronAPI?.resizeWindow('checklist');
+            setMode(MODE_POSTCHECK);
+          }}
+          onLogoutComplete={() => {
+            // Fallback jika tidak pakai Electron (browser dev)
+            if (!window.electronAPI?.doLogout) {
+              setMode(MODE_LOGIN);
+              setNis('');
+              setPassword('');
+              setError('');
+              setStudentData(null);
+            }
+          }}
+        />
+        {/* Chat bubble for receiving admin messages */}
+        <ChatBubble
+          socket={socketRef.current}
+          studentName={studentData?.nama_lengkap || ''}
+          pcName={pcName}
+        />
+      </>
     );
   }
 
@@ -497,12 +564,24 @@ export default function App() {
 
   // ── Mode Login (kiosk fullscreen) ────────────────────────────────
   return (
-    <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4 relative overflow-hidden font-sans">
+    <>
+      {/* Attention Mode Overlay - Highest z-index, always on top */}
+      <AttentionModeOverlay
+        enabled={attentionMode.enabled}
+        message={attentionMode.message}
+        onAcknowledge={() => {
+          if (socketRef.current) {
+            socketRef.current.emit('client:attention-ack', {});
+          }
+        }}
+      />
 
-      {/* Dialog Admin (overlay di atas semua) */}
-      {showAdminDialog && (
-        <AdminExitDialog onClose={() => setShowAdminDialog(false)} />
-      )}
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4 relative overflow-hidden font-sans">
+
+        {/* Dialog Admin (overlay di atas semua) */}
+        {showAdminDialog && (
+          <AdminExitDialog onClose={() => setShowAdminDialog(false)} />
+        )}
 
       {/* Tombol tersembunyi pojok kiri bawah — klik 5x untuk buka dialog admin */}
       <button
@@ -644,5 +723,6 @@ export default function App() {
         </div>
       </div>
     </div>
+    </>
   );
 }

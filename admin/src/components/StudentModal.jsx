@@ -73,7 +73,7 @@ export default function StudentModal({ student, onClose, onSaved }) {
       } else {
         onSaved();
       }
-    } catch {
+    } catch (e) {
       setError('Koneksi ke server gagal.');
     } finally {
       setLoading(false);
