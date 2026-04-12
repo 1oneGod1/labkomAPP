@@ -2032,8 +2032,8 @@ export default function AdminDashboard() {
       {/* SIDEBAR */}
       <aside className="w-64 bg-slate-900 text-white flex-col hidden md:flex sticky top-0 h-screen">
         <div className="p-6 border-b border-slate-800 flex items-center space-x-3">
-          <div className="bg-blue-600 p-2 rounded-lg"><Monitor className="w-6 h-6 text-white" /></div>
-          <div><h1 className="text-xl font-bold tracking-wide">NetLab Admin</h1><p className="text-xs text-slate-400">Control Panel</p></div>
+          <img src="/logo-sekolah.png" alt="Logo SPH" className="w-10 h-10 object-contain rounded-lg" />
+          <div><h1 className="text-xl font-bold tracking-wide">SPH LabKom</h1><p className="text-xs text-slate-400">Admin Dashboard</p></div>
         </div>
 
         <nav className="flex-1 p-4 space-y-2">

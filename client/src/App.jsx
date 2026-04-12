@@ -622,9 +622,9 @@ export default function App() {
         <div className="p-10 flex flex-col justify-between text-white bg-gradient-to-br from-blue-600/50 to-indigo-900/50">
           <div>
             <img
-              src="https://static.wixstatic.com/media/07639e_83549958900b44ad9fea05d99e380dd5~mv2.png/v1/fill/w_559,h_512,al_c/07639e_83549958900b44ad9fea05d99e380dd5~mv2.png"
-              alt="Logo Sekolah"
-              className="w-20 h-20 object-contain mb-6 filter brightness-0 invert opacity-80"
+              src="/logo-sekolah.png"
+              alt="Logo Sekolah Palembang Harapan"
+              className="w-24 h-24 object-contain mb-6 drop-shadow-lg"
             />
             <h2 className="text-3xl font-bold mb-2">Sistem Manajemen Lab</h2>
             <p className="text-blue-200">Silakan login untuk mulai menggunakan komputer ini.</p>
