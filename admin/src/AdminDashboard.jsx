@@ -8,10 +8,13 @@ import {
   Wifi, WifiOff, Server, Copy, Check, DownloadCloud, Bell, Zap,
   ClipboardList, FilterX, ThumbsUp, ThumbsDown, Eye, EyeOff, Maximize2,
   PowerOff, Play, Radio, Cpu, Activity, MessageCircle,
+  BookOpen, FileText, FolderOpen, LayoutGrid, List, Upload, Trophy,
 } from 'lucide-react';
 import StudentModal from './components/StudentModal.jsx';
 import ActivityMonitor from './components/ActivityMonitor.jsx';
 import ChatPanel from './components/ChatPanel.jsx';
+import ScreenShareAdmin from './components/ScreenShareAdmin.jsx';
+import AttentionModeButton from './components/AttentionModeButton.jsx';
 
 // Di Electron production, window load dari file:// sehingga fetch relatif gagal.
 // Deteksi protokol: file:// → pakai absolute URL ke server lokal.
@@ -450,7 +453,7 @@ export default function AdminDashboard() {
 
   const refreshClientMacs = useCallback(async () => {
     if (window.electronAPI?.getClientMacs) {
-      const res = await window.electronAPI.getClientMacs();
+      const res = await window.electronAPI.getClientMacs(sessionStorage.getItem('admin_token'));
       if (res.success) setClientMacs(res.data || []);
     }
   }, []);
@@ -552,7 +555,7 @@ export default function AdminDashboard() {
     setConfirmKillAll(null);
     try {
       if (window.electronAPI?.sendClientCmd) {
-        const res = await window.electronAPI.sendClientCmd('kill', permanent);
+        const res = await window.electronAPI.sendClientCmd('kill', permanent, sessionStorage.getItem('admin_token'));
         if (res.success) showToast(`Perintah hentikan dikirim (${permanent ? 'permanen' : 'sementara'}).`);
         else showToast('Gagal kirim perintah kill.', 'error');
       } else {
@@ -567,7 +570,7 @@ export default function AdminDashboard() {
     setRemoteBusy(true);
     try {
       if (window.electronAPI?.sendClientCmd) {
-        const res = await window.electronAPI.sendClientCmd('enable', false);
+        const res = await window.electronAPI.sendClientCmd('enable', false, sessionStorage.getItem('admin_token'));
         if (res.success) showToast('Perintah aktifkan dikirim — klien akan restart dlm ≤2 menit.');
         else showToast('Gagal kirim perintah enable.', 'error');
       } else {
@@ -796,6 +799,39 @@ export default function AdminDashboard() {
   const [pingResults, setPingResults] = useState({});
   const [restarting,  setRestarting]  = useState(false);
   const [copiedIp,    setCopiedIp]    = useState(null);
+  const [deviceClaims, setDeviceClaims] = useState([]);
+  const [claimsLoading, setClaimsLoading] = useState(false);
+
+  const fetchDeviceClaims = useCallback(async () => {
+    setClaimsLoading(true);
+    try {
+      const data = await apiFetch('/api/admin/device-claims');
+      if (data?.success) setDeviceClaims(data.data || []);
+    } catch (_) {}
+    finally { setClaimsLoading(false); }
+  }, []);
+
+  const revokeDeviceClaim = useCallback(async (pcName) => {
+    if (!window.confirm(`Hapus claim untuk ${pcName}? Device tersebut akan otomatis register ulang saat reconnect.`)) return;
+    try {
+      const data = await apiFetch('/api/admin/device-claims/revoke', {
+        method: 'POST',
+        body: JSON.stringify({ pc_name: pcName }),
+      });
+      if (data?.success) {
+        showToast(data.message || 'Claim dihapus', 'success');
+        fetchDeviceClaims();
+      } else {
+        showToast(data?.message || 'Gagal menghapus claim', 'error');
+      }
+    } catch (e) {
+      showToast('Gagal menghapus claim: ' + e.message, 'error');
+    }
+  }, [fetchDeviceClaims]);
+
+  useEffect(() => {
+    if (activeTab === 'server' && authReady) fetchDeviceClaims();
+  }, [activeTab, authReady, fetchDeviceClaims]);
 
   const fetchChecks = useCallback(async (pg = 1) => {
     setChkLoading(true);
@@ -1592,6 +1628,46 @@ export default function AdminDashboard() {
             </div>
           </div>
         )}
+
+        {/* ── Device Claims (per-PC token) ── */}
+        <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+          <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+            <div>
+              <h3 className="font-bold text-slate-800 text-lg">Device Terdaftar</h3>
+              <p className="text-sm text-slate-500 mt-0.5">PC yang sudah claim slot via token. Hapus claim jika PC reinstall atau ganti hardware.</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs bg-slate-100 text-slate-500 rounded-full px-3 py-1 font-medium">{deviceClaims.length} device</span>
+              <button onClick={fetchDeviceClaims} disabled={claimsLoading} className="p-2 rounded-lg hover:bg-slate-100 text-slate-500" title="Refresh">
+                {claimsLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+              </button>
+            </div>
+          </div>
+          {deviceClaims.length === 0 ? (
+            <div className="px-6 py-8 text-center text-slate-400 text-sm">
+              {claimsLoading ? 'Memuat…' : 'Belum ada device yang teregister.'}
+            </div>
+          ) : (
+            <div className="divide-y divide-slate-100">
+              {deviceClaims.map((claim) => (
+                <div key={claim.pc_name} className="px-6 py-3 flex items-center gap-4 hover:bg-slate-50">
+                  <div className="flex-1 min-w-0">
+                    <p className="font-mono font-bold text-slate-800 text-sm">{claim.pc_name}</p>
+                    <p className="text-xs text-slate-500 font-mono truncate">device: {claim.device_id}</p>
+                    <p className="text-[11px] text-slate-400">expires: {claim.expires_at ? new Date(claim.expires_at).toLocaleString('id-ID') : '-'}</p>
+                  </div>
+                  <button
+                    onClick={() => revokeDeviceClaim(claim.pc_name)}
+                    className="px-3 py-1.5 bg-red-50 hover:bg-red-100 border border-red-200 text-red-700 rounded-lg text-xs font-medium flex items-center gap-1.5"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    Hapus Claim
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     );
   };
@@ -1979,6 +2055,412 @@ export default function AdminDashboard() {
   // ═══════════════════════════════════════════════════════════════════════
   // MAIN RENDER
   // ═══════════════════════════════════════════════════════════════════════
+  const getScreenForPc = (pc) => {
+    const pcId = String(pc?.id || '').toUpperCase();
+    const actualPc = String(pc?.actual_pc_name || '').toUpperCase();
+    return screens.find((screen) => {
+      const screenPc = String(screen.pc_name || '').toUpperCase();
+      return screenPc === pcId || screenPc === actualPc;
+    });
+  };
+
+  const getPcStudentName = (pc) => pc?.student?.name || pc?.student?.nama_lengkap || 'Belum ada siswa';
+
+  const activePcs = pcs.filter((pc) => pc.status === 'active');
+  const lockedPcs = pcs.filter((pc) => pc.status === 'locked');
+  const onlineCount = pcs.filter((pc) => pc.status !== 'offline').length;
+  const offlineCount = pcs.filter((pc) => pc.status === 'offline').length;
+  const activeClassName = 'Lab Aktif';
+
+  const activityFeed = [
+    ...activePcs.slice(0, 5).map((pc) => ({
+      icon: Activity,
+      time: new Date(pc.last_seen || Date.now()).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
+      title: getPcStudentName(pc),
+      detail: `${pc.id} sedang aktif`,
+    })),
+    ...lockedPcs.slice(0, 2).map((pc) => ({
+      icon: Lock,
+      time: new Date(pc.last_seen || Date.now()).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
+      title: pc.id,
+      detail: 'Menunggu login siswa',
+    })),
+  ].slice(0, 7);
+
+  const classroomRows = [
+    { label: 'Lab Komputer', count: pcs.length, active: true },
+  ];
+
+  const renderPcPreview = (pc, index) => {
+    const screen = getScreenForPc(pc);
+    const isOffline = pc.status === 'offline';
+
+    if (isOffline) {
+      return (
+        <div className="h-32 bg-slate-800 text-slate-400 flex flex-col items-center justify-center gap-2">
+          <Monitor className="w-8 h-8 opacity-60" />
+          <span className="text-[10px] font-semibold tracking-[0.2em]">OFFLINE</span>
+        </div>
+      );
+    }
+
+    return (
+      <div className="h-32 bg-[#0837d8] p-1.5">
+        <div className="h-full rounded-sm bg-white overflow-hidden border border-blue-950/20">
+          <div className={`h-5 flex items-center justify-between px-2 text-[9px] text-white ${pc.status === 'active' ? 'bg-emerald-600' : 'bg-slate-500'}`}>
+            <span className="truncate">{screen ? 'Live Screen' : (pc.status === 'active' ? 'Online' : 'Idle')}</span>
+            <span>•••</span>
+          </div>
+          {screen?.image ? (
+            <img src={screen.image} alt={pc.id} className="w-full h-[calc(100%-1.25rem)] object-cover" />
+          ) : (
+            <div className="h-[calc(100%-1.25rem)] bg-slate-50 p-3">
+              <div className="h-2 bg-blue-500/70 rounded mb-3 w-1/3" />
+              <div className="space-y-2">
+                <div className="h-1.5 bg-slate-300 rounded w-full" />
+                <div className="h-1.5 bg-slate-200 rounded w-4/5" />
+                <div className="h-1.5 bg-slate-200 rounded w-2/3" />
+              </div>
+              {index % 4 === 1 && <div className="mt-5 h-10 w-20 bg-lime-300 mx-auto" />}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const renderLabSidebar = () => (
+    <aside className="w-[190px] shrink-0 bg-[#f5f8fc] border-r border-slate-200 flex flex-col text-[11px]">
+      <div className="px-3 py-2.5 border-b border-slate-200">
+        <p className="font-bold text-slate-500 uppercase mb-2">Kelas Aktif</p>
+        <div className="space-y-1">
+          {classroomRows.map((row) => (
+            <button key={row.label} className={`w-full flex items-center justify-between px-2 py-1.5 rounded ${row.active ? 'bg-blue-100 text-blue-700' : 'text-slate-600 hover:bg-white'}`}>
+              <span className="flex items-center gap-1.5"><Users className="w-3.5 h-3.5" />{row.label}</span>
+              <span className="rounded-full bg-white/80 px-1.5 text-[10px]">{row.count}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="px-3 py-2.5 border-b border-slate-200">
+        <p className="font-bold text-slate-500 uppercase mb-2">Tampilan</p>
+        <div className="space-y-1">
+          {[
+            { id: 'monitoring', label: 'Grid Thumbnail', icon: LayoutGrid },
+            { id: 'screens', label: 'Daftar Detail', icon: List },
+            { id: 'history', label: 'Layout Lab', icon: Monitor },
+          ].map(({ id, label, icon: Icon }) => (
+            <button key={id} onClick={() => setActiveTab(id)} className={`w-full flex items-center gap-2 px-2 py-1.5 rounded text-left ${activeTab === id ? 'bg-blue-100 text-blue-700' : 'text-slate-600 hover:bg-white'}`}>
+              <Icon className="w-3.5 h-3.5" /> {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="px-3 py-2.5">
+        <p className="font-bold text-slate-500 uppercase mb-2">Grup</p>
+        <div className="space-y-1">
+          {[
+            ['Semua PC', pcs.length],
+            ['Aktif (login)', activePcs.length],
+            ['Idle (belum login)', lockedPcs.length],
+            ['Offline', offlineCount],
+          ].map(([label, count]) => (
+            <button key={label} className="w-full flex items-center justify-between px-2 py-1.5 rounded text-slate-600 hover:bg-white">
+              <span className="flex items-center gap-1.5"><FolderOpen className="w-3.5 h-3.5" />{label}</span>
+              <span className="rounded-full bg-slate-200 px-1.5 text-[10px]">{count}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-auto p-3 border-t border-slate-200">
+        <p className="font-bold text-slate-500 uppercase mb-2">Status</p>
+        <div className="space-y-1 text-[11px] text-slate-600">
+          <div className="flex justify-between"><span>Online</span><span className="font-semibold text-emerald-600">{onlineCount}</span></div>
+          <div className="flex justify-between"><span>Offline</span><span className="font-semibold text-slate-500">{offlineCount}</span></div>
+        </div>
+      </div>
+    </aside>
+  );
+
+  const renderActivityRail = () => (
+    <aside className="w-[270px] shrink-0 border-l border-slate-200 bg-white">
+      <div className="h-full flex flex-col">
+        <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
+          <p className="font-bold text-slate-700 text-xs uppercase tracking-wide">Aktivitas Terkini</p>
+          <button className="text-slate-400 hover:text-slate-600"><X className="w-3.5 h-3.5" /></button>
+        </div>
+        <div className="divide-y divide-slate-100 overflow-y-auto">
+          {(activityFeed.length ? activityFeed : [{ icon: CheckCircle2, time: '14:15', title: 'Server aktif', detail: 'Menunggu aktivitas siswa' }]).map((item, index) => {
+            const Icon = item.icon;
+            return (
+              <div key={`${item.time}-${index}`} className="px-4 py-3 flex gap-3">
+                <Icon className="w-4 h-4 text-blue-500 mt-1" />
+                <div className="min-w-0">
+                  <p className="text-[10px] text-slate-400 font-mono">{item.time}</p>
+                  <p className="text-xs font-semibold text-slate-700 truncate">{item.title}</p>
+                  <p className="text-[11px] text-slate-500 truncate">{item.detail}</p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </aside>
+  );
+
+  const renderLabMonitorView = () => (
+    <div className="h-full flex">
+      <div className="flex-1 min-w-0 overflow-y-auto p-4 bg-[#eef3f9]">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <button onClick={() => fetchPcs()} className="px-3 py-1.5 rounded border border-slate-300 bg-white text-xs font-semibold text-slate-600 flex items-center gap-1.5">
+              <RefreshCw className="w-3.5 h-3.5" /> Refresh
+            </button>
+            <button onClick={() => setConfirmLogoutAll(true)} className="px-3 py-1.5 rounded bg-blue-600 text-white text-xs font-semibold flex items-center gap-1.5">
+              <Lock className="w-3.5 h-3.5" /> Kunci Semua
+            </button>
+          </div>
+          <div className="relative w-56">
+            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2 top-1/2 -translate-y-1/2" />
+            <input className="w-full pl-7 pr-3 py-1.5 text-xs rounded border border-slate-300 bg-white outline-none focus:border-blue-500" placeholder="Cari siswa atau PC..." />
+          </div>
+        </div>
+
+        {pcsLoading ? (
+          <div className="h-80 flex items-center justify-center text-blue-600"><Loader2 className="w-8 h-8 animate-spin" /></div>
+        ) : (
+          <div className="grid grid-cols-2 xl:grid-cols-4 2xl:grid-cols-5 gap-3">
+            {pcs.map((pc, index) => (
+              <button key={pc.id} onClick={() => pc.status !== 'offline' && setControlModalPc(pc)} className={`text-left bg-white border rounded overflow-hidden shadow-sm hover:shadow-md transition ${pc.status === 'active' ? 'border-blue-500' : pc.status === 'locked' ? 'border-amber-300' : 'border-slate-300 opacity-80'}`}>
+                {renderPcPreview(pc, index)}
+                <div className="p-2">
+                  <div className="flex items-center justify-between">
+                    <p className="font-bold text-[11px] text-slate-800">{pc.id}</p>
+                    <span className={`text-[9px] rounded-full px-1.5 py-0.5 ${pc.status === 'active' ? 'bg-emerald-50 text-emerald-600' : pc.status === 'locked' ? 'bg-amber-50 text-amber-600' : 'bg-slate-100 text-slate-500'}`}>
+                      {pc.status === 'active' ? 'Online' : pc.status === 'locked' ? 'Idle' : 'Offline'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] font-semibold text-slate-700 truncate mt-1">{getPcStudentName(pc)}</p>
+                  <p className="text-[10px] text-slate-500 truncate">{pc.student?.kelas || pc.duration || '-'}</p>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      {renderActivityRail()}
+    </div>
+  );
+
+  const renderBroadcastStudio = () => (
+    <div className="h-full grid grid-cols-[minmax(0,1fr)_260px] gap-4 p-4 bg-[#eef3f9] overflow-y-auto">
+      <div className="space-y-3">
+        <ScreenShareAdmin socket={realtimeSocketRef.current} />
+      </div>
+      <div className="space-y-3">
+        <div className="bg-white border border-slate-200 rounded p-3">
+          <div className="flex justify-between items-center mb-3">
+            <p className="text-xs font-bold uppercase text-slate-700">Siswa Online ({onlineCount})</p>
+          </div>
+          {pcs.length === 0 ? (
+            <p className="text-[11px] text-slate-400 text-center py-4">Belum ada siswa terhubung</p>
+          ) : (
+            <div className="grid grid-cols-2 gap-2">
+              {pcs.filter((pc) => pc.status !== 'offline').slice(0, 24).map((pc) => (
+                <div key={pc.id} className="border border-slate-100 rounded p-2">
+                  <p className="text-[11px] font-semibold truncate">{getPcStudentName(pc)}</p>
+                  <p className="text-[10px] text-slate-400">{pc.id}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
+  // eslint-disable-next-line no-unused-vars
+  const _UNUSED_QUIZ_STUDIO = () => (
+    <div className="h-full grid grid-cols-[220px_minmax(0,1fr)_230px] gap-4 p-4 bg-[#eef3f9] overflow-y-auto">
+      <div className="bg-white border border-slate-200 rounded p-3">
+        <p className="text-xs font-bold text-slate-600 uppercase mb-3">Pertanyaan</p>
+        {['Tag semantic untuk header halaman', 'Struktur semantic konten', 'Aksesibilitas main landmark', 'True/False: div selalu salah'].map((q, i) => (
+          <button key={q} className={`w-full text-left px-2 py-2 rounded mb-1 text-[11px] ${i === 0 ? 'bg-blue-100 text-blue-700' : 'hover:bg-slate-50 text-slate-600'}`}>
+            {i + 1}. {q}
+          </button>
+        ))}
+      </div>
+      <div className="space-y-4">
+        <div className="bg-blue-700 text-white rounded p-8 text-center">
+          <p className="text-xs uppercase opacity-80 mb-4">Soal 01 / 5 - Sedang berlangsung</p>
+          <h2 className="text-xl font-bold mb-8">Tag semantik HTML5 manakah untuk bagian header halaman?</h2>
+          <div className="grid grid-cols-3 gap-6 max-w-lg mx-auto">
+            <div><p className="text-3xl font-bold">00:42</p><p className="text-xs opacity-80">tersisa</p></div>
+            <div><p className="text-3xl font-bold">28/30</p><p className="text-xs opacity-80">menjawab</p></div>
+            <div><p className="text-3xl font-bold">78%</p><p className="text-xs opacity-80">benar</p></div>
+          </div>
+        </div>
+        <div className="bg-white border border-slate-200 rounded p-4">
+          <p className="text-xs font-bold uppercase text-slate-700 mb-3">Distribusi Jawaban</p>
+          {[['A. <header>', 78, true], ['B. <section>', 14], ['C. <top>', 4], ['D. <div class=\"header\">', 4]].map(([label, percent, correct]) => (
+            <div key={label} className="mb-3">
+              <div className="flex justify-between text-[11px] mb-1"><span>{label}</span><span>{percent}%</span></div>
+              <div className="h-4 bg-slate-100 rounded overflow-hidden">
+                <div className={`h-full ${correct ? 'bg-emerald-500' : 'bg-slate-400'}`} style={{ width: `${percent}%` }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="space-y-3">
+        <div className="bg-white border border-slate-200 rounded p-3">
+          <p className="text-xs font-bold uppercase text-slate-700 mb-2">Status Siswa - Live</p>
+          <div className="grid grid-cols-2 gap-1">
+            {pcs.slice(0, 18).map((pc, i) => (
+              <div key={pc.id} className={`text-[10px] rounded px-2 py-1 ${i % 5 === 0 ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}>
+                {getPcStudentName(pc).split(' ')[0]}
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="bg-white border border-slate-200 rounded p-3">
+          <p className="text-xs font-bold uppercase text-slate-700 mb-2">Leaderboard Sementara</p>
+          {activePcs.slice(0, 5).map((pc, i) => (
+            <div key={pc.id} className="flex justify-between text-[11px] py-1">
+              <span>{i + 1}. {getPcStudentName(pc)}</span><span className="text-blue-600 font-bold">{256 - i * 14}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+
+  // eslint-disable-next-line no-unused-vars
+  const _UNUSED_FILE_STUDIO = () => (
+    <div className="h-full grid grid-cols-[260px_minmax(0,1fr)] gap-4 p-4 bg-[#eef3f9] overflow-y-auto">
+      <div className="bg-white border border-slate-200 rounded p-3">
+        <div className="flex items-center justify-between mb-3">
+          <p className="text-xs font-bold uppercase text-slate-700">File Kelas</p>
+          <button className="px-2 py-1 bg-blue-600 text-white rounded text-[10px] flex items-center gap-1"><Upload className="w-3 h-3" />Upload</button>
+        </div>
+        {['materi-pertemuan-8.pdf', 'tugas-html-template.zip', 'semantic-html.link', 'video-demo.mp4', 'quiz-html.docx'].map((file, i) => (
+          <button key={file} className="w-full flex items-center gap-2 px-2 py-2 rounded hover:bg-slate-50 text-left">
+            <FileText className="w-4 h-4 text-blue-500" />
+            <div className="min-w-0 flex-1">
+              <p className="text-[11px] font-semibold text-slate-700 truncate">{file}</p>
+              <p className="text-[10px] text-slate-400">{i + 1}.2 MB - 14:2{i}</p>
+            </div>
+            <span className={`text-[9px] rounded px-1.5 py-0.5 ${i === 2 ? 'bg-blue-50 text-blue-600' : 'bg-emerald-50 text-emerald-600'}`}>{i === 2 ? 'Sedang dikirim' : 'Terkirim'}</span>
+          </button>
+        ))}
+      </div>
+      <div className="space-y-4">
+        <div className="bg-white border border-slate-200 rounded p-4">
+          <div className="flex justify-between mb-4">
+            <div>
+              <p className="text-xs text-slate-500 font-semibold uppercase">Pengiriman: Contoh Kode HTML</p>
+              <h3 className="font-bold text-slate-900">Distribusi File & Pengumpulan Tugas</h3>
+            </div>
+            <button className="text-xs text-blue-600 font-semibold">Selesai Berbagi</button>
+          </div>
+          <div className="grid grid-cols-4 gap-4 text-xs mb-4">
+            <div><p className="text-slate-400">File</p><p className="font-semibold">semantic-html.zip</p></div>
+            <div><p className="text-slate-400">Tujuan</p><p className="font-semibold">Semua Siswa</p></div>
+            <div><p className="text-slate-400">Mode</p><p className="font-semibold">Salin ke Buku Otomatis</p></div>
+            <div><p className="text-slate-400">Akses</p><p className="font-semibold">Read only - 1 jam</p></div>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="flex-1 h-2 bg-slate-100 rounded"><div className="h-2 bg-blue-600 rounded w-[93%]" /></div>
+            <span className="text-xs font-bold text-blue-700">93%</span>
+          </div>
+        </div>
+        <div className="bg-white border border-slate-200 rounded p-4">
+          <p className="text-xs font-bold uppercase text-slate-700 mb-3">Status Per Siswa</p>
+          <div className="grid grid-cols-3 gap-2">
+            {pcs.slice(0, 24).map((pc, i) => (
+              <div key={pc.id} className="flex items-center justify-between border border-slate-100 rounded px-2 py-1.5 text-[11px]">
+                <span className="truncate">{getPcStudentName(pc)}</span>
+                <span className={`${i % 7 === 0 ? 'text-amber-600 bg-amber-50' : i % 11 === 0 ? 'text-red-600 bg-red-50' : 'text-emerald-600 bg-emerald-50'} rounded px-1.5 py-0.5`}>
+                  {i % 7 === 0 ? 'Menunggu' : i % 11 === 0 ? 'Gagal' : 'Diterima'}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  // eslint-disable-next-line no-unused-vars
+  const _UNUSED_SETTINGS_STUDIO = () => (
+    <div className="h-full p-5 bg-[#eef3f9] overflow-y-auto">
+      <div className="max-w-3xl">
+        <h3 className="text-lg font-bold text-slate-900">Konfigurasi Lab</h3>
+        <p className="text-xs text-slate-500 mb-4">Identitas lab, layout fisik, dan default sesi.</p>
+        <div className="space-y-3">
+          <div className="bg-white border border-slate-200 rounded">
+            <div className="px-4 py-2 border-b border-slate-100 text-xs font-bold uppercase text-slate-600">Identitas Lab</div>
+            <div className="grid grid-cols-2 gap-4 p-4 text-xs">
+              <label>Nama Lab<input className="mt-1 w-full border border-slate-300 rounded px-2 py-1.5" defaultValue="Lab Komputer 1" /></label>
+              <label>Lokasi<input className="mt-1 w-full border border-slate-300 rounded px-2 py-1.5" defaultValue="Lantai 2 - Gedung B" /></label>
+              <label>Kapasitas<input className="mt-1 w-full border border-slate-300 rounded px-2 py-1.5" defaultValue={`${pcs.length || 32} unit`} /></label>
+              <label>Penanggung Jawab<input className="mt-1 w-full border border-slate-300 rounded px-2 py-1.5" defaultValue="Pak Rudi" /></label>
+            </div>
+          </div>
+          <div className="bg-white border border-slate-200 rounded">
+            <div className="px-4 py-2 border-b border-slate-100 text-xs font-bold uppercase text-slate-600">Layout Komputer</div>
+            <div className="grid grid-cols-3 gap-4 p-4 text-xs">
+              <label>Baris<input className="mt-1 w-full border border-slate-300 rounded px-2 py-1.5" defaultValue="5" /></label>
+              <label>Kolom<input className="mt-1 w-full border border-slate-300 rounded px-2 py-1.5" defaultValue="6" /></label>
+              <label>Penomoran<select className="mt-1 w-full border border-slate-300 rounded px-2 py-1.5"><option>Kiri ke kanan - atas ke bawah</option></select></label>
+            </div>
+          </div>
+          <div className="bg-white border border-slate-200 rounded">
+            <div className="px-4 py-2 border-b border-slate-100 text-xs font-bold uppercase text-slate-600">Default Sesi</div>
+            <div className="p-4 space-y-3 text-xs">
+              {[
+                ['Auto-lock saat tangan diangkat', true],
+                ['Rekam aktivitas siswa otomatis', webFilterEnabled],
+                ['Kunci semua PC saat mulai sesi', false],
+                ['Kirim notifikasi ke siswa saat dipantau', true],
+              ].map(([label, enabled]) => (
+                <div key={label} className="flex items-center justify-between">
+                  <span>{label}</span>
+                  <button className={`w-9 h-5 rounded-full relative ${enabled ? 'bg-blue-600' : 'bg-slate-300'}`}>
+                    <span className={`absolute top-1 h-3 w-3 rounded-full bg-white ${enabled ? 'right-1' : 'left-1'}`} />
+                  </button>
+                </div>
+              ))}
+              <div className="pt-3 border-t border-slate-100">
+                <div className="flex justify-between text-xs mb-1"><span>Volume default</span><span>{globalVolume}%</span></div>
+                <input type="range" min="0" max="100" value={globalVolume} onChange={(e) => setGlobalVolume(Number(e.target.value))} className="w-full accent-blue-600" />
+              </div>
+            </div>
+          </div>
+          <button onClick={() => saveSettings()} disabled={ctrlSaving} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-bold flex items-center gap-2">
+            {ctrlSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} Simpan Konfigurasi
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderWorkspaceContent = () => {
+    if (activeTab === 'monitoring') return renderLabMonitorView();
+    if (activeTab === 'screenshare') return renderBroadcastStudio();
+    if (activeTab === 'checks')   return <div className="p-4 bg-[#eef3f9] h-full overflow-y-auto">{renderChecks()}</div>;
+    if (activeTab === 'activities') return <div className="p-4 bg-[#eef3f9] h-full overflow-y-auto"><ActivityMonitor serverUrl={API} socket={realtimeSocketRef.current} /></div>;
+    if (activeTab === 'control')  return <div className="p-4 bg-[#eef3f9] h-full overflow-y-auto">{renderControl()}</div>;
+    if (activeTab === 'screens')  return <div className="p-4 bg-[#eef3f9] h-full overflow-y-auto">{renderScreens()}</div>;
+    if (activeTab === 'students') return <div className="p-4 bg-[#eef3f9] h-full overflow-y-auto">{renderStudents()}</div>;
+    if (activeTab === 'history')  return <div className="p-4 bg-[#eef3f9] h-full overflow-y-auto">{renderHistory()}</div>;
+    if (activeTab === 'server')   return <div className="p-4 bg-[#eef3f9] h-full overflow-y-auto">{renderServer()}</div>;
+    return renderLabMonitorView();
+  };
+
   if (authLoading) {
     return (
       <div className="min-h-screen bg-slate-100 flex items-center justify-center">
@@ -2027,12 +2509,81 @@ export default function AdminDashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 flex font-sans">
+    <div className="h-screen bg-[#dfe6ef] font-sans text-slate-800 overflow-hidden">
+      <div className="h-full flex flex-col bg-white border border-slate-300 shadow-xl">
+        <div className="h-7 bg-[#f8fafc] border-b border-slate-200 flex items-center px-3 text-[11px]">
+          <div className="flex gap-1.5 mr-4">
+            <span className="w-3 h-3 rounded-full bg-red-400" />
+            <span className="w-3 h-3 rounded-full bg-amber-400" />
+            <span className="w-3 h-3 rounded-full bg-emerald-400" />
+          </div>
+          <div className="flex-1 text-center font-semibold text-slate-600">Labkom - Lab Komputer 1 - {activeClassName}</div>
+          <div className="text-slate-500">Sesi: {currentTime.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })} - Admin Lab</div>
+        </div>
+
+        <div className="h-7 bg-white border-b border-slate-200 flex items-center justify-between px-3 text-[11px]">
+          <div className="flex items-center gap-4">
+            {['File', 'Edit', 'View', 'Siswa', 'Kelas', 'Tools', 'Bantuan'].map((item) => (
+              <button key={item} className={`px-2 py-1 rounded ${item === 'View' ? 'bg-blue-100 text-blue-700' : 'hover:bg-slate-100 text-slate-700'}`}>{item}</button>
+            ))}
+          </div>
+          <button onClick={handleAdminLogout} className="flex items-center gap-1 text-slate-500 hover:text-red-600">
+            <LogOut className="w-3.5 h-3.5" /> Keluar
+          </button>
+        </div>
+
+        <div className="h-14 bg-white border-b border-slate-200 flex items-center justify-between px-3">
+          <div className="flex items-center gap-1">
+            {[
+              { id: 'monitoring', label: 'Awasi', icon: Eye },
+              { id: 'screens', label: 'Layar', icon: Monitor },
+              { id: 'screenshare', label: 'Tayangkan', icon: BookOpen },
+              { id: 'students', label: 'Siswa', icon: Users },
+              { id: 'history', label: 'Riwayat', icon: History },
+              { id: 'checks', label: 'Pengecekan', icon: ClipboardList },
+              { id: 'activities', label: 'Aktivitas', icon: Activity },
+              { id: 'control', label: 'Pengaturan', icon: Settings },
+              { id: 'server', label: 'Server', icon: Server },
+            ].map(({ id, label, icon: Icon }) => (
+              <button
+                key={id}
+                onClick={() => setActiveTab(id)}
+                className={`w-16 h-11 rounded flex flex-col items-center justify-center gap-0.5 text-[10px] ${activeTab === id ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50'}`}
+              >
+                <Icon className="w-4 h-4" />
+                <span>{label}</span>
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-2">
+            <ServerInfoBanner info={serverInfo} />
+            <button onClick={handleCheckUpdate} className="h-8 px-3 rounded border border-slate-200 text-xs text-slate-600 hover:bg-slate-50 flex items-center gap-1.5">
+              <DownloadCloud className="w-3.5 h-3.5" /> Update
+            </button>
+          </div>
+        </div>
+
+        <UpdateBanner status={updateStatus} onCheck={handleCheckUpdate} onDownload={handleDownloadUpdate} onInstall={handleInstallUpdate} />
+
+        <div className="flex flex-1 min-h-0">
+          {renderLabSidebar()}
+          <main className="flex-1 min-w-0 min-h-0">
+            {renderWorkspaceContent()}
+          </main>
+        </div>
+
+        <div className="h-5 bg-blue-700 text-white text-[10px] flex items-center justify-between px-3">
+          <span className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-emerald-300" /> Server Aktif</span>
+          <span>{onlineCount} online - {offlineCount} offline - {activePcs.length} aktif</span>
+          <span>Kelas {activeClassName}</span>
+          <span>Diag/Win - {currentTime.toLocaleTimeString('id-ID')}</span>
+        </div>
+      </div>
 
       {/* SIDEBAR */}
-      <aside className="w-64 bg-slate-900 text-white flex-col hidden md:flex sticky top-0 h-screen">
+      <aside className="hidden">
         <div className="p-6 border-b border-slate-800 flex items-center space-x-3">
-          <img src="/logo-sekolah.png" alt="Logo SPH" className="w-10 h-10 object-contain rounded-lg" />
+          <img src="./logo-sekolah.png" alt="Logo SPH" className="w-10 h-10 object-contain rounded-lg" onError={(e) => { e.target.style.display = 'none'; }} />
           <div><h1 className="text-xl font-bold tracking-wide">SPH LabKom</h1><p className="text-xs text-slate-400">Admin Dashboard</p></div>
         </div>
 
@@ -2046,6 +2597,7 @@ export default function AdminDashboard() {
             { id: 'checks',     label: 'Pengecekan Fasilitas', icon: ClipboardList  },
             { id: 'activities', label: 'Aktivitas Siswa',      icon: Activity       },
             { id: 'chat',       label: 'Pesan & Chat',         icon: MessageCircle  },
+            { id: 'screenshare', label: 'Berbagi Layar',       icon: Monitor        },
             { id: 'server',     label: 'Status Server',        icon: Server         },
           ].map(({ id, label, icon: Icon }) => (
             <button
@@ -2084,7 +2636,7 @@ export default function AdminDashboard() {
       </aside>
 
       {/* MAIN CONTENT */}
-      <main className="flex-1 flex flex-col min-w-0 overflow-y-auto h-screen">
+      <main className="hidden">
         <header className="bg-white border-b border-slate-200 px-6 py-4 flex justify-between items-center sticky top-0 z-10 gap-4 flex-wrap">
           <div>
             <h2 className="text-2xl font-bold text-slate-800">
@@ -2095,8 +2647,9 @@ export default function AdminDashboard() {
               {activeTab === 'history'   && 'Riwayat Sesi Praktikum'}
               {activeTab === 'checks'    && 'Log Pengecekan Fasilitas'}
               {activeTab === 'activities' && 'Monitoring Aktivitas Siswa'}
-              {activeTab === 'chat'       && 'Pesan & Komunikasi'}
-              {activeTab === 'server'     && 'Status Server'}
+              {activeTab === 'chat'        && 'Pesan & Komunikasi'}
+              {activeTab === 'screenshare' && 'Berbagi Layar ke Siswa'}
+              {activeTab === 'server'      && 'Status Server'}
             </h2>
             <p className="text-sm text-slate-500 mt-0.5">Mengelola akses dan data aktivitas lab komputer.</p>
           </div>
@@ -2129,9 +2682,9 @@ export default function AdminDashboard() {
           {activeTab === 'students'  && renderStudents()}
           {activeTab === 'history'   && renderHistory()}
           {activeTab === 'checks'    && renderChecks()}
-          {activeTab === 'activities' && <ActivityMonitor serverUrl={API} socket={realtimeSocketRef.current} />}
-          {activeTab === 'chat'       && <ChatPanel socket={realtimeSocketRef.current} />}
-          {activeTab === 'server'     && renderServer()}
+          {activeTab === 'activities'  && <ActivityMonitor serverUrl={API} socket={realtimeSocketRef.current} />}
+          {activeTab === 'screenshare' && <ScreenShareAdmin socket={realtimeSocketRef.current} />}
+          {activeTab === 'server'      && renderServer()}
         </div>
       </main>
 
@@ -2266,6 +2819,12 @@ export default function AdminDashboard() {
 
       {/* ─── Toast Notifikasi ─────────────────────────────────────────────── */}
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+
+      {/* ─── Chat Panel (selalu mounted agar pesan tidak hilang saat ganti tab) ── */}
+      <ChatPanel socket={realtimeSocketRef.current} />
+
+      {/* ─── Attention Mode (kunci layar semua siswa) ── */}
+      <AttentionModeButton socket={realtimeSocketRef.current} />
     </div>
   );
 }

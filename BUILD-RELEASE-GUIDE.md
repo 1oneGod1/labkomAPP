@@ -27,6 +27,8 @@ npm run electron:build
 ```
 Hasil: `admin/dist-electron/LabKom Admin - Dashboard Setup *.exe`
 
+> Node.js hanya diperlukan pada mesin build. Installer Admin menjalankan server dengan runtime Node bawaan Electron, sehingga PC tujuan tidak perlu memasang Node.js.
+
 ### Build Client
 ```bash
 cd client
@@ -119,3 +121,18 @@ Kedua app menggunakan GitHub Releases dari repo `1oneGod1/labkomAPP`:
 - Admin app harus berjalan terlebih dahulu (server otomatis start)
 - Pastikan kedua PC dalam jaringan LAN yang sama
 - UDP broadcast port 41234 harus tidak diblokir firewall
+
+## Konfigurasi keamanan wajib
+
+### Electron/Node
+
+1. Jalankan `npm run hash-admin-password -- <password-kuat>` dari folder `server`.
+2. Setelah Admin pertama kali dijalankan, edit `server.env` di folder data aplikasi Admin. Lokasinya dicatat pada log Electron.
+3. Isi `ADMIN_PASSWORD` dengan hash bcrypt, `FIREBASE_SERVICE_ACCOUNT_KEY` dengan path absolut di luar folder instalasi, dan `CLIENT_REGISTRATION_KEY` dengan kunci acak minimal 32 karakter.
+4. Pada setiap PC siswa, set environment variable `LABKOM_CLIENT_REGISTRATION_KEY` ke nilai pairing yang sama.
+
+Service account Firebase tidak boleh dimasukkan ke repository maupun installer.
+
+### Rewrite .NET
+
+Set `LABKOM_SHARED_SECRET` dengan nilai acak minimal 16 karakter dan nilai yang sama pada Teacher, Student Agent, dan Student Overlay. Aplikasi Teacher menolak start dan client menolak koneksi jika secret belum tersedia. Nilai dapat pula diisi pada `Teacher:SharedSecret`, `Agent:SharedSecret`, atau `Overlay:SharedSecret` di appsettings lokal, tetapi environment variable lebih disarankan.

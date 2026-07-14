@@ -1,5 +1,6 @@
 const { Server } = require('socket.io');
 const { validateToken } = require('./services/adminSessionService');
+const clientTokenService = require('./services/clientTokenService');
 const {
   normalizePcName,
   upsertClient,
@@ -74,7 +75,16 @@ function attachRealtimeHub(httpServer) {
       return next();
     }
 
+    // Client role: butuh device token yang sudah teregister
+    const clientToken = socket.handshake.auth?.client_token;
+    const claim = clientTokenService.validateToken(clientToken);
+    if (!claim) {
+      return next(new Error('unauthorized client — token invalid atau expired'));
+    }
     socket.data.role = 'client';
+    socket.data.device_id = claim.device_id;
+    socket.data.claimed_pc_name = claim.pc_name;
+    socket.data.pc_name = claim.pc_name;
     return next();
   });
 
@@ -138,6 +148,35 @@ function attachRealtimeHub(httpServer) {
         callback?.({ success: true, count });
       });
 
+      // ── Admin Screen Share ─────────────────────────────────────
+      socket.on('admin:screen-share-start', () => {
+        // Notify all clients that admin started sharing
+        for (const [, s] of io.sockets.sockets) {
+          if (s.data.role !== 'admin') {
+            s.emit('admin:screen-share-start');
+          }
+        }
+      });
+
+      socket.on('admin:screen-share-frame', (data = {}) => {
+        if (!data.image) return;
+        // Relay frame to all clients
+        for (const [, s] of io.sockets.sockets) {
+          if (s.data.role !== 'admin') {
+            s.emit('admin:screen-share-frame', { image: data.image });
+          }
+        }
+      });
+
+      socket.on('admin:screen-share-stop', () => {
+        // Notify all clients that admin stopped sharing
+        for (const [, s] of io.sockets.sockets) {
+          if (s.data.role !== 'admin') {
+            s.emit('admin:screen-share-stop');
+          }
+        }
+      });
+
       // ── Attention Mode (Blank Screen) ──────────────────────────
       socket.on('admin:attention-mode', ({ enabled, message, target } = {}) => {
         const payload = {
@@ -190,7 +229,7 @@ function attachRealtimeHub(httpServer) {
 
     function updatePresence(payload = {}, source = 'socket') {
       const entry = upsertClient({
-        pc_name: payload.pc_name,
+        pc_name: socket.data.claimed_pc_name,
         mac: payload.mac,
         ip: payload.ip,
         student_name: payload.student_name,
@@ -211,6 +250,8 @@ function attachRealtimeHub(httpServer) {
       return entry;
     }
 
+    bindClientRoom(socket.data.claimed_pc_name);
+
     socket.on('client:hello', (payload = {}) => {
       updatePresence(payload, 'socket-hello');
     });
@@ -220,7 +261,7 @@ function attachRealtimeHub(httpServer) {
     });
 
     socket.on('client:screen', (payload = {}) => {
-      const pcName = normalizePcName(payload.pc_name || socket.data.pc_name);
+      const pcName = normalizePcName(socket.data.claimed_pc_name);
       if (!pcName || !payload.image) return;
 
       updatePresence({ ...payload, pc_name: pcName }, 'socket-screen');
@@ -235,7 +276,7 @@ function attachRealtimeHub(httpServer) {
     });
 
     socket.on('client:screen-stop', (payload = {}) => {
-      const pcName = normalizePcName(payload.pc_name || socket.data.pc_name);
+      const pcName = normalizePcName(socket.data.claimed_pc_name);
       if (!pcName) return;
       if (removeScreen(pcName)) {
         io.to('admins').emit('screen:remove', { pc_name: pcName });
@@ -290,7 +331,7 @@ function attachRealtimeHub(httpServer) {
       });
 
       // Save to database (async, don't block)
-      saveActivityToDatabase(activity).catch(err => {
+      saveActivityToDatabase({ ...activity, pc_name: pcName }).catch(err => {
         console.error('[ACTIVITY] Failed to save:', err.message);
       });
     });

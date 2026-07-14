@@ -41,4 +41,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // ── General API request via Node.js http (bypass Chromium fetch restriction) ──
   apiRequest: (url, options) => ipcRenderer.invoke('api-request', url, options),
+
+  // ── Attention Mode: paksa kiosk + keyboard hook saat enabled ───
+  setAttentionMode: (enabled) => ipcRenderer.send('set-attention-mode', enabled),
+
+  // ── Device token untuk socket auth (di-issue oleh main process) ──
+  getClientToken: () => ipcRenderer.invoke('get-client-token'),
+
+  // ── Verify emergency password tanpa expose plaintext ke renderer ──
+  verifyEmergencyPassword: (pw) => ipcRenderer.invoke('verify-emergency-password', pw),
 });

@@ -245,13 +245,30 @@ async function startServer() {
     return false;
   }
 
-  const nodeExe = findNodeExecutable();
+  // Paket production memakai runtime Node yang sudah tertanam di Electron,
+  // sehingga PC tujuan tidak perlu menginstal Node.js secara terpisah.
+  const nodeExe = isDev ? findNodeExecutable() : process.execPath;
+  const managedEnvPath = isDev
+    ? path.join(serverDir, '.env')
+    : path.join(app.getPath('userData'), 'server.env');
+  if (!isDev && !fs.existsSync(managedEnvPath)) {
+    const examplePath = path.join(serverDir, '.env.example');
+    if (fs.existsSync(examplePath)) fs.copyFileSync(examplePath, managedEnvPath);
+    log.warn('[SERVER] Konfigurasi dibuat di:', managedEnvPath);
+  }
   console.log('[ADMIN] Menjalankan server:', serverEntry, '| node:', nodeExe);
 
   serverStopRequested = false;
+  const serverEnv = {
+    ...process.env,
+    NODE_ENV: 'production',
+    LABKOM_ENV_PATH: managedEnvPath,
+  };
+  if (!isDev) serverEnv.ELECTRON_RUN_AS_NODE = '1';
+
   const managedProcess = spawn(nodeExe, [serverEntry], {
     cwd:  serverDir,
-    env:  { ...process.env, NODE_ENV: 'production' },
+    env:  serverEnv,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   serverProcess = managedProcess;
@@ -328,7 +345,6 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration:  false,
       devTools:         allowDevTools,
-      webSecurity:      false,  // izinkan fetch dari file:// ke http://localhost:3001
     },
   });
 
@@ -349,7 +365,10 @@ function createWindow() {
 
   // Buka link eksternal di browser default, bukan di Electron
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') shell.openExternal(url);
+    } catch {}
     return { action: 'deny' };
   });
 
@@ -458,37 +477,54 @@ ipcMain.on('install-update', () => {
 });
 
 // ─── IPC: Kirim perintah remote ke semua klien (via server) ────────────────
-ipcMain.handle('send-client-cmd', async (_ev, cmd, permanent = false) => {
+function requestLocalServerJson({ path: requestPath, method = 'GET', body = null, token = null, timeoutMs = 5000, fallback = { success: false } }) {
   return new Promise((resolve) => {
-    const body = JSON.stringify({ cmd, permanent });
-    const req  = http.request({
-      host: '127.0.0.1', port: serverPort, path: '/api/client-cmd', method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+    const bodyString = body ? JSON.stringify(body) : '';
+    const headers = { 'Content-Type': 'application/json' };
+    if (bodyString) headers['Content-Length'] = Buffer.byteLength(bodyString);
+    if (token) headers.Authorization = `Bearer ${token}`;
+
+    const req = http.request({
+      host: '127.0.0.1',
+      port: serverPort,
+      path: requestPath,
+      method,
+      headers,
     }, (res) => {
-      let b = '';
-      res.on('data', d => b += d);
-      res.on('end', () => { try { resolve(JSON.parse(b)); } catch { resolve({ success: false }); } });
+      let responseBody = '';
+      res.on('data', d => responseBody += d);
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(responseBody));
+        } catch {
+          resolve(fallback);
+        }
+      });
     });
-    req.on('error', () => resolve({ success: false }));
-    req.setTimeout(5000, () => { req.destroy(); resolve({ success: false }); });
-    req.write(body);
+    req.on('error', () => resolve(fallback));
+    req.setTimeout(timeoutMs, () => { req.destroy(); resolve(fallback); });
+    if (bodyString) req.write(bodyString);
     req.end();
+  });
+}
+
+ipcMain.handle('send-client-cmd', async (_ev, cmd, permanent = false, token = null) => {
+  return requestLocalServerJson({
+    path: '/api/client-cmd',
+    method: 'POST',
+    body: { cmd, permanent },
+    token,
   });
 });
 
 // ─── IPC: Ambil daftar MAC address klien ────────────────────────────────────
-ipcMain.handle('get-client-macs', async () => {
-  return new Promise((resolve) => {
-    const req = http.request({
-      host: '127.0.0.1', port: serverPort, path: '/api/client-cmd/macs', method: 'GET',
-    }, (res) => {
-      let b = '';
-      res.on('data', d => b += d);
-      res.on('end', () => { try { resolve(JSON.parse(b)); } catch { resolve({ success: false, data: [] }); } });
-    });
-    req.on('error', () => resolve({ success: false, data: [] }));
-    req.setTimeout(4000, () => { req.destroy(); resolve({ success: false, data: [] }); });
-    req.end();
+ipcMain.handle('get-client-macs', async (_ev, token = null) => {
+  return requestLocalServerJson({
+    path: '/api/client-cmd/macs',
+    method: 'GET',
+    token,
+    timeoutMs: 4000,
+    fallback: { success: false, data: [] },
   });
 });
 

@@ -30,6 +30,13 @@ export default function AttentionModeOverlay({ enabled, message, onAcknowledge }
     }
   }, [enabled, localEnabled]);
 
+  // Send acknowledgement once when overlay first becomes active
+  useEffect(() => {
+    if (localEnabled && onAcknowledge) onAcknowledge();
+    // Intentionally only depend on localEnabled — onAcknowledge ref change must not retrigger ack
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [localEnabled]);
+
   useEffect(() => {
     if (!localEnabled) return;
 
@@ -69,11 +76,6 @@ export default function AttentionModeOverlay({ enabled, message, onAcknowledge }
     document.addEventListener('click', blockMouse, true);
     document.addEventListener('dblclick', blockMouse, true);
 
-    // Send acknowledgement to admin
-    if (onAcknowledge) {
-      onAcknowledge();
-    }
-
     return () => {
       document.removeEventListener('keydown', blockKeyboard, true);
       document.removeEventListener('keyup', blockKeyboard, true);
@@ -84,7 +86,7 @@ export default function AttentionModeOverlay({ enabled, message, onAcknowledge }
       document.removeEventListener('click', blockMouse, true);
       document.removeEventListener('dblclick', blockMouse, true);
     };
-  }, [localEnabled, onAcknowledge]);
+  }, [localEnabled]);
 
   if (!localEnabled) return null;
 

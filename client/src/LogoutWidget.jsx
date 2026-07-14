@@ -118,14 +118,10 @@ export default function LogoutWidget({ studentData, onRequestPostCheck, onLogout
       const res = await apiCall(`${SERVER_URL}/api/auth/logout`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ session_id: Number(sessionId) }),
+        body:    JSON.stringify({ session_id: sessionId }),
       });
-      if (!res.ok && studentData?.student_id) {
-        await apiCall(`${SERVER_URL}/api/auth/force-logout`, {
-          method:  'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({ student_id: studentData.student_id }),
-        });
+      if (!res.ok) {
+        console.warn('Logout server returned non-success; continuing local logout.');
       }
     } catch (err) {
       // Tetap lanjut logout UI meski jaringan putus

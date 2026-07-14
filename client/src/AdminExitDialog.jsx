@@ -1,5 +1,6 @@
 ﻿import React, { useState, useEffect, useRef } from 'react';
 import { ShieldCheck, X, Eye, EyeOff, LogOut, AlertCircle } from 'lucide-react';
+import { apiCall } from './api.js';
 
 const SERVER_URL = sessionStorage.getItem('server_url') || 'http://localhost:3001';
 
@@ -25,12 +26,12 @@ export default function AdminExitDialog({ onClose }) {
   }, [onClose]);
 
   const doExit = async () => {
-    const pcName = await window.electronAPI?.getPcName?.() || '';
-    if (pcName) {
-      await fetch(`${SERVER_URL}/api/auth/force-logout`, {
+    const sessionId = sessionStorage.getItem('session_id');
+    if (sessionId) {
+      await apiCall(`${SERVER_URL}/api/auth/logout`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pc_name: pcName }),
+        body: JSON.stringify({ session_id: sessionId }),
       }).catch(() => {});
     }
     window.electronAPI?.quitApp();
@@ -43,33 +44,30 @@ export default function AdminExitDialog({ onClose }) {
     setIsLoading(true);
     setError('');
 
-    // Password lokal untuk emergency exit tanpa koneksi ke server
-    const LOCAL_EMERGENCY_PASSWORD = 'labkom123';
-
-    // Cek password lokal terlebih dahulu
-    if (password === LOCAL_EMERGENCY_PASSWORD) {
+    // Cek password lokal (verifikasi di main process; plaintext tidak ada di bundle)
+    const isLocalMatch = await window.electronAPI?.verifyEmergencyPassword?.(password);
+    if (isLocalMatch) {
       await doExit();
       return;
     }
 
     // Jika bukan password lokal, coba verifikasi ke server
     try {
-      const res = await fetch(`${SERVER_URL}/api/admin/verify-password`, {
+      const result = await apiCall(`${SERVER_URL}/api/admin/verify-password`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password }),
       });
-      const result = await res.json();
 
-      if (res.ok && result.success) {
+      if (result.ok && result.data?.success) {
         await doExit();
       } else {
-        setError(result.message || 'Password salah.');
+        setError(result.data?.message || 'Password salah.');
         setPassword('');
         inputRef.current?.focus();
       }
     } catch {
-      setError('Server tidak dapat dijangkau. Gunakan password emergency "labkom123" untuk keluar.');
+      setError('Server tidak dapat dijangkau. Gunakan password emergency yang dikonfigurasi pada PC ini.');
       setPassword('');
       inputRef.current?.focus();
     } finally {

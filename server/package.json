@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "generate-hash": "node scripts/generate-hash.js"
+    "generate-hash": "node scripts/generate-hash.js",
+    "hash-admin-password": "node scripts/hash-admin-password.js",
+    "test": "node --test"
   },
   "dependencies": {
     "bcrypt": "^5.1.1",

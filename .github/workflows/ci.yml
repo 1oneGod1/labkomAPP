@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            server/package-lock.json
+            client/package-lock.json
+            admin/package-lock.json
+      - name: Install dependencies
+        run: |
+          npm ci --prefix server
+          npm ci --prefix client
+          npm ci --prefix admin
+      - name: Check backend syntax
+        run: find server/src server/scripts -name '*.js' -print0 | xargs -0 -n1 node --check
+      - name: Test backend
+        run: npm test --prefix server
+      - name: Test client lock packaging
+        run: npm test --prefix client
+      - name: Build client
+        run: npm run build:react --prefix client
+      - name: Build admin
+        run: npm run build:react --prefix admin
+      - name: Audit dependencies
+        run: |
+          npm audit --audit-level=high --prefix server
+          npm audit --audit-level=high --prefix client
+          npm audit --audit-level=high --prefix admin
+
+  dotnet:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Build .NET rewrite
+        run: dotnet build LabKom.NET/LabKom.sln --configuration Release

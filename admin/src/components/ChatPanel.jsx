@@ -32,8 +32,7 @@ export default function ChatPanel({ socket }) {
   useEffect(() => {
     if (!socket) return;
 
-    // Listener untuk pesan dari client
-    socket.on('chat:message-from-client', (data) => {
+    const handleClientMessage = (data) => {
       const { pc_name, student_name, message: msg, timestamp } = data;
       setMessages((prev) => [
         ...prev,
@@ -46,18 +45,26 @@ export default function ChatPanel({ socket }) {
           timestamp: timestamp || new Date().toISOString(),
         },
       ]);
-    });
+    };
 
-    // Update jumlah client online
-    socket.on('presence:update', (data) => {
-      if (data?.onlineCount !== undefined) {
-        setOnlineCount(data.onlineCount);
+    // Update jumlah client online dari presence events
+    const onlineClients = new Map();
+    const handlePresence = (data) => {
+      if (!data?.pc_name) return;
+      if (data.is_online) {
+        onlineClients.set(data.pc_name, true);
+      } else {
+        onlineClients.delete(data.pc_name);
       }
-    });
+      setOnlineCount(onlineClients.size);
+    };
+
+    socket.on('chat:message-from-client', handleClientMessage);
+    socket.on('presence:update', handlePresence);
 
     return () => {
-      socket.off('chat:message-from-client');
-      socket.off('presence:update');
+      socket.off('chat:message-from-client', handleClientMessage);
+      socket.off('presence:update', handlePresence);
     };
   }, [socket]);
 

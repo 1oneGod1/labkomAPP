@@ -3,10 +3,32 @@ const os         = require('os');
 const firebaseService = require('../services/firebaseService');
 const { getClientRegistry, normalizePcName } = require('../services/clientRegistryService');
 const { resolveMappedLabPc } = require('../services/labComputerService');
+const clientTokenService = require('../services/clientTokenService');
+const { authorizeRegistration } = require('../services/registrationKeyService');
+
+const loginLocks = new Set();
+
+// POST /api/auth/device-register
+function deviceRegister(req, res) {
+  const { device_id, pc_name } = req.body || {};
+  const authorization = authorizeRegistration({
+    configuredKey: process.env.CLIENT_REGISTRATION_KEY,
+    suppliedKey: req.headers['x-labkom-registration-key'],
+    isProduction: process.env.NODE_ENV === 'production',
+  });
+  if (!authorization.ok) {
+    return res.status(authorization.status).json({ success: false, message: authorization.message });
+  }
+  const result = clientTokenService.issueToken({ device_id, pc_name });
+  if (!result.ok) {
+    return res.status(409).json({ success: false, message: result.message });
+  }
+  res.json({ success: true, data: { token: result.token } });
+}
 
 // POST /api/auth/login
 async function login(req, res) {
-  const { nis, password, pc_name } = req.body;
+  const { nis, password } = req.body;
 
   if (!nis || !password) {
     return res.status(400).json({ success: false, message: 'NIS dan password wajib diisi.' });
@@ -25,8 +47,20 @@ async function login(req, res) {
       return res.status(403).json({ success: false, message: 'Akun siswa tidak aktif.' });
     }
 
-    // 3. Auto-close sesi hantu untuk PC yang sama (misal Electron crash sebelumnya)
-    const reportedPcName = normalizePcName(pc_name || os.hostname());
+    // 3. Verifikasi password sebelum mengubah sesi apa pun.
+    // Urutan ini mencegah request ber-password salah menutup sesi PC lain.
+    const passwordValid = await bcrypt.compare(password, student.password_hash);
+    if (!passwordValid) {
+      return res.status(401).json({ success: false, message: 'Password salah.' });
+    }
+
+    if (loginLocks.has(student.id)) {
+      return res.status(409).json({ success: false, message: 'Login siswa sedang diproses. Silakan coba lagi.' });
+    }
+    loginLocks.add(student.id);
+    try {
+    // 4. Identitas PC selalu berasal dari token perangkat, bukan payload renderer.
+    const reportedPcName = normalizePcName(req.actor?.pc_name || os.hostname());
     const presenceEntry = getClientRegistry().find(
       (entry) => normalizePcName(entry.pc_name) === reportedPcName
     );
@@ -38,7 +72,7 @@ async function login(req, res) {
     const cleanupPcNames = Array.from(new Set([reportedPcName, pcName].filter(Boolean)));
     await firebaseService.sessions.closeActiveByPcNames(cleanupPcNames);
 
-    // 4. Cek apakah akun ini masih aktif di PC LAIN
+    // 5. Cek apakah akun ini masih aktif di PC LAIN
     const activeSession = await firebaseService.sessions.getActiveByStudentId(student.id);
 
     if (activeSession) {
@@ -48,16 +82,12 @@ async function login(req, res) {
       });
     }
 
-    // 5. Verifikasi password
-    const passwordValid = await bcrypt.compare(password, student.password_hash);
-    if (!passwordValid) {
-      return res.status(401).json({ success: false, message: 'Password salah.' });
-    }
-
     // 6. Buat session baru
     const session = await firebaseService.sessions.create({
       student_id: student.id,
       pc_name: pcName,
+      actual_pc_name: reportedPcName,
+      device_id: req.actor.device_id,
       nis: student.nis,
       nama_lengkap: student.nama_lengkap,
       kelas: student.kelas,
@@ -76,6 +106,9 @@ async function login(req, res) {
         actual_pc_name: reportedPcName,
       },
     });
+    } finally {
+      loginLocks.delete(student.id);
+    }
 
   } catch (err) {
     console.error('[LOGIN ERROR]', err);
@@ -92,6 +125,18 @@ async function logout(req, res) {
   }
 
   try {
+    const session = await firebaseService.sessions.getById(session_id);
+    if (!session || session.status !== 'active') {
+      return res.status(404).json({ success: false, message: 'Sesi tidak ditemukan atau sudah selesai.' });
+    }
+    const ownsSession = session.device_id
+      ? session.device_id === req.actor?.device_id
+      : [session.pc_name, session.actual_pc_name].some((name) =>
+          normalizePcName(name) === normalizePcName(req.actor?.pc_name));
+    if (!ownsSession) {
+      return res.status(403).json({ success: false, message: 'Sesi bukan milik perangkat ini.' });
+    }
+
     const result = await firebaseService.sessions.endSession(session_id, 'finished');
 
     if (!result) {
@@ -161,4 +206,4 @@ async function checkStatus(req, res) {
   }
 }
 
-module.exports = { login, logout, forceLogout, checkStatus };
+module.exports = { login, logout, forceLogout, checkStatus, deviceRegister };

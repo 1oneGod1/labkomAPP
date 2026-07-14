@@ -1,4 +1,7 @@
-require('dotenv').config();
+const path = require('path');
+require('dotenv').config({
+  path: process.env.LABKOM_ENV_PATH || path.resolve(__dirname, '..', '.env'),
+});
 const express = require('express');
 const cors    = require('cors');
 const os      = require('os');

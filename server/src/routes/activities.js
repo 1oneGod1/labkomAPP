@@ -2,13 +2,14 @@ const express = require('express');
 const router = express.Router();
 const activitiesController = require('../controllers/activitiesController');
 const { requireAdmin } = require('../middleware/requireAdmin');
+const { requireClient } = require('../middleware/requireClient');
 
 /**
  * Activity Monitoring Routes
  */
 
-// Create activity log (client Electron mengirim data — tidak perlu admin auth)
-router.post('/', activitiesController.createActivity);
+// Create activity log — butuh client token (atau admin)
+router.post('/', requireClient, activitiesController.createActivity);
 
 // Semua endpoint GET & DELETE memerlukan admin authentication
 router.get('/',                    requireAdmin, activitiesController.getActivities);

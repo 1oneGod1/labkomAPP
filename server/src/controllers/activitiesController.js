@@ -8,7 +8,22 @@ const firebaseService = require('../services/firebaseService');
 // POST /api/activities - Receive activity data from client
 exports.createActivity = async (req, res) => {
   try {
-    const activity = req.body;
+    const activity = { ...req.body };
+    if (req.actor?.role === 'client') {
+      activity.pc_name = req.actor.pc_name;
+      if (activity.session_id) {
+        const session = await firebaseService.sessions.getById(activity.session_id);
+        const ownsSession = session && (session.device_id
+          ? session.device_id === req.actor.device_id
+          : [session.pc_name, session.actual_pc_name].some((name) => String(name || '').toUpperCase() === req.actor.pc_name));
+        if (!ownsSession || session.status !== 'active') {
+          return res.status(403).json({ success: false, message: 'Sesi activity bukan milik perangkat ini.' });
+        }
+      }
+    }
+    if (!activity.pc_name || !activity.activity_type) {
+      return res.status(400).json({ success: false, message: 'pc_name dan activity_type wajib diisi.' });
+    }
     await firebaseService.activities.create(activity);
     res.json({ success: true, message: 'Activity logged' });
   } catch (error) {

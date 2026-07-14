@@ -1,10 +1,11 @@
 ﻿const express = require('express');
 const router  = express.Router();
 const { submitCheck, getChecks, getChecksSummary } = require('../controllers/checksController');
-const { requireAdmin } = require('../middleware/requireAdmin');
+const { requireAdmin }  = require('../middleware/requireAdmin');
+const { requireClient } = require('../middleware/requireClient');
 
-// POST /api/checks -> kirim hasil checklist dari klien
-router.post('/', submitCheck);
+// POST /api/checks -> kirim hasil checklist dari klien (butuh client token)
+router.post('/', requireClient, submitCheck);
 
 // GET /api/checks -> ambil log checklist (admin)
 router.get('/', requireAdmin, getChecks);

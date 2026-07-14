@@ -1,6 +1,8 @@
 {
   "name": "labkom-admin",
   "version": "1.0.0",
+  "description": "Dashboard administrasi dan pemantauan laboratorium komputer",
+  "author": "LabKom",
   "type": "module",
   "main": "electron/main.js",
   "scripts": {
@@ -42,8 +44,16 @@
         "to": "server",
         "filter": [
           "**/*",
-          "!.env*",
-          "!.git/**"
+          "!.env",
+          "!.env.local",
+          "!.env.*.local",
+          "!firebase-service-account.json",
+          "!*firebase-adminsdk*.json",
+          "!serviceAccountKey.json",
+          "!.git/**",
+          "!node_modules/nodemon/**",
+          "!test/**",
+          "!*.log"
         ]
       }
     ],

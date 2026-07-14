@@ -1,24 +1,24 @@
-﻿const { app, BrowserWindow, globalShortcut, ipcMain, screen, desktopCapturer } = require('electron');
+const { app, BrowserWindow, globalShortcut, ipcMain, screen, desktopCapturer } = require('electron');
 const os              = require('os');
 const path            = require('path');
 const fs              = require('fs');
 const http            = require('http');
 const dgram           = require('dgram');
+const crypto          = require('crypto');
 const { execSync, spawn } = require('child_process');
 const { io }          = require('socket.io-client');
 const ActivityMonitor = require('./activityMonitor');
 
-// â”€â”€ Chromium flags: izinkan fetch dari file:// ke http:// LAN â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-app.commandLine.appendSwitch('disable-web-security');
-app.commandLine.appendSwitch('allow-running-insecure-content');
-app.commandLine.appendSwitch('allow-insecure-localhost');
+// Semua HTTP renderer sudah lewat IPC apiRequest (file:// → main process Node.js http),
+// jadi flag disable-web-security tidak diperlukan. Socket.io WebSocket dari file:// ke
+// http:// LAN tetap diizinkan Chromium, dan server CORS sudah allow null origin.
 
-// â”€â”€ Single instance: hanya aktif di production supaya dev client bisa jalan berdampingan
+// ── Single instance: hanya aktif di production supaya dev client bisa jalan berdampingan
 if (app.isPackaged && !app.requestSingleInstanceLock()) {
   app.quit();
 }
 
-// â”€â”€â”€ UDP Discovery Listener â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── UDP Discovery Listener ─────────────────────────────────────────────────
 const DISCOVERY_PORT = 41234;
 let   udpSocket      = null;
 
@@ -61,7 +61,7 @@ let allowAppQuit = false;
 let realtimeSocket = null;
 let presenceHeartbeatTimer = null;
 
-// â”€â”€ Auto-Updater (silent background update) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Auto-Updater (silent background update) ──────────────────────────────────
 // Client: download otomatis di background, install saat app keluar
 autoUpdater.logger         = log;
 autoUpdater.logger.transports.file.level = 'info';
@@ -87,7 +87,7 @@ process.on('unhandledRejection', (reason) => {
   log.error('[MAIN] unhandledRejection:', reason);
 });
 
-// â”€â”€ Path file konfigurasi server URL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Path file konfigurasi server URL ────────────────────────────────────────
 function getConfigPath() {
   return path.join(app.getPath('userData'), 'server.config.json');
 }
@@ -97,8 +97,102 @@ function loadServerConfig() {
     return JSON.parse(raw);
   } catch { return {}; }
 }
+function isAllowedLabServerUrl(value) {
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'http:') return false;
+    const host = parsed.hostname.toLowerCase();
+    if (host === 'localhost' || host === '127.0.0.1') return true;
+    if (/^10\.(\d{1,3}\.){2}\d{1,3}$/.test(host)) return true;
+    if (/^192\.168\.(\d{1,3}\.)\d{1,3}$/.test(host)) return true;
+    const match172 = host.match(/^172\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    return Boolean(match172 && Number(match172[1]) >= 16 && Number(match172[1]) <= 31);
+  } catch {
+    return false;
+  }
+}
 function saveServerConfig(data) {
   fs.writeFileSync(getConfigPath(), JSON.stringify(data, null, 2), 'utf-8');
+}
+
+// ── Device identity & token (per-PC client auth) ────────────────────────────────
+function getDevicePath() {
+  return path.join(app.getPath('userData'), 'device.json');
+}
+function loadDeviceInfo() {
+  try {
+    const raw = fs.readFileSync(getDevicePath(), 'utf-8');
+    return JSON.parse(raw);
+  } catch { return {}; }
+}
+function saveDeviceInfo(info) {
+  try { fs.writeFileSync(getDevicePath(), JSON.stringify(info, null, 2), 'utf-8'); } catch (_) {}
+}
+function getOrCreateDeviceId() {
+  const info = loadDeviceInfo();
+  if (info.device_id) return info.device_id;
+  const id = crypto.randomBytes(16).toString('hex');
+  saveDeviceInfo({ ...info, device_id: id });
+  return id;
+}
+function getStoredClientToken() {
+  return loadDeviceInfo().client_token || null;
+}
+function setStoredClientToken(token) {
+  const info = loadDeviceInfo();
+  info.client_token = token;
+  saveDeviceInfo(info);
+}
+
+// Minta token dari server. Resolve null kalau gagal.
+function requestDeviceToken(serverUrl) {
+  return new Promise((resolve) => {
+    if (!serverUrl) return resolve(null);
+    let parsed;
+    try { parsed = new URL(`${serverUrl}/api/auth/device-register`); }
+    catch { return resolve(null); }
+    const body = JSON.stringify({
+      device_id: getOrCreateDeviceId(),
+      pc_name: os.hostname(),
+    });
+    const headers = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) };
+    if (process.env.LABKOM_CLIENT_REGISTRATION_KEY) {
+      headers['X-LabKom-Registration-Key'] = process.env.LABKOM_CLIENT_REGISTRATION_KEY;
+    }
+    const req = http.request({
+      hostname: parsed.hostname,
+      port: parseInt(parsed.port) || 3001,
+      path: parsed.pathname,
+      method: 'POST',
+      headers,
+    }, (res) => {
+      let buf = '';
+      res.on('data', (d) => buf += d);
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(buf);
+          if (json?.success && json.data?.token) {
+            setStoredClientToken(json.data.token);
+            resolve(json.data.token);
+          } else {
+            log.warn('[DEVICE-AUTH] Register ditolak:', json?.message);
+            resolve(null);
+          }
+        } catch { resolve(null); }
+      });
+    });
+    req.setTimeout(5000, () => { req.destroy(); resolve(null); });
+    req.on('error', (err) => { log.warn('[DEVICE-AUTH] Error:', err.message); resolve(null); });
+    req.write(body);
+    req.end();
+  });
+}
+
+// Pastikan ada token valid; kalau belum atau ditolak server, register ulang
+async function ensureClientToken(serverUrl) {
+  const stored = getStoredClientToken();
+  if (stored) return stored;
+  return await requestDeviceToken(serverUrl);
 }
 
 let mainWindow;
@@ -106,94 +200,146 @@ let focusRecoveryTimer = null;
 let aggressiveFocusInterval = null;
 let screenShareTimer   = null;
 let screenCaptureInFlight = false;
+let lockModeEnabled = true;
 
-// ── Windows Keyboard Hook (blokir Alt+Tab di level OS) ──────────────────────
+// ── Windows Keyboard Hook (blokir Alt+Tab di level OS) ────────────────────────────────
 let kbHookProcess = null;
 let kbHookFlagPath = null;
+let kbHookReady = false;
+let kbHookReadyTimer = null;
+let kbHookRestartTimer = null;
+
+function clearKeyboardHookTimers() {
+  if (kbHookReadyTimer) {
+    clearTimeout(kbHookReadyTimer);
+    kbHookReadyTimer = null;
+  }
+  if (kbHookRestartTimer) {
+    clearTimeout(kbHookRestartTimer);
+    kbHookRestartTimer = null;
+  }
+}
+
+function scheduleKeyboardHookRestart(reason) {
+  if (allowAppQuit || !isKioskLocked() || kbHookRestartTimer) return;
+  log.warn(`[KIOSK] Menjadwalkan ulang keyboard hook: ${reason}`);
+  kbHookRestartTimer = setTimeout(() => {
+    kbHookRestartTimer = null;
+    startKeyboardHook();
+  }, 1000);
+}
 
 function startKeyboardHook() {
   if (process.platform !== 'win32') return;
-  if (kbHookProcess) return; // Sudah berjalan
+  if (kbHookProcess) return;
 
   try {
-    // Tentukan path script PS1
     const ps1Path = app.isPackaged
-      ? path.join(path.dirname(process.execPath), 'resources', 'electron', 'blockAltTab.ps1')
+      ? path.join(process.resourcesPath, 'electron', 'blockAltTab.ps1')
       : path.join(__dirname, 'blockAltTab.ps1');
 
     if (!fs.existsSync(ps1Path)) {
-      log.warn('[KIOSK] blockAltTab.ps1 tidak ditemukan di:', ps1Path);
+      log.error('[KIOSK] blockAltTab.ps1 tidak ditemukan di:', ps1Path);
+      scheduleKeyboardHookRestart('script-tidak-ditemukan');
       return;
     }
 
-    // File flag untuk menghentikan hook
     kbHookFlagPath = path.join(app.getPath('userData'), 'kbhook-stop.flag');
-    // Hapus flag lama kalau ada
     try { if (fs.existsSync(kbHookFlagPath)) fs.unlinkSync(kbHookFlagPath); } catch {}
 
-    // Dapatkan PID Electron untuk dikirim ke PS1 agar bisa force-focus window
-    const electronPID = process.pid;
-
-    kbHookProcess = spawn('powershell.exe', [
+    kbHookReady = false;
+    const hookProcess = spawn('powershell.exe', [
+      '-NoLogo',
       '-NoProfile',
       '-NonInteractive',
       '-WindowStyle', 'Hidden',
       '-ExecutionPolicy', 'Bypass',
       '-File', ps1Path,
       '-FlagFile', kbHookFlagPath,
-      '-ElectronPID', String(electronPID),
+      '-ElectronPID', String(process.pid),
     ], {
+      windowsHide: true,
       detached: false,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    kbHookProcess = hookProcess;
 
-    kbHookProcess.stdout?.on('data', (d) => log.info('[KBHOOK stdout]', d.toString().trim()));
-    kbHookProcess.stderr?.on('data', (d) => log.warn('[KBHOOK stderr]', d.toString().trim()));
-
-    kbHookProcess.on('exit', (code) => {
-      log.info('[KIOSK] Keyboard hook process keluar, kode:', code);
-      kbHookProcess = null;
-      // Otomatis restart jika masih dalam mode lock
-      if (isKioskLocked()) {
-        log.info('[KIOSK] Keyboard hook keluar saat masih lock, restart...');
-        setTimeout(() => startKeyboardHook(), 500);
+    hookProcess.stdout?.on('data', (data) => {
+      const message = data.toString().trim();
+      if (!message) return;
+      log.info('[KBHOOK stdout]', message);
+      if (message.includes('Hook terpasang berhasil')) {
+        kbHookReady = true;
+        if (kbHookReadyTimer) {
+          clearTimeout(kbHookReadyTimer);
+          kbHookReadyTimer = null;
+        }
       }
     });
-
-    kbHookProcess.on('error', (err) => {
-      log.warn('[KIOSK] Gagal menjalankan keyboard hook:', err.message);
-      kbHookProcess = null;
+    hookProcess.stderr?.on('data', (data) => {
+      const message = data.toString().trim();
+      if (message) log.warn('[KBHOOK stderr]', message);
     });
 
-    log.info('[KIOSK] Windows keyboard hook dimulai (PID:', kbHookProcess.pid, '), script:', ps1Path);
+    hookProcess.on('exit', (code) => {
+      if (kbHookProcess === hookProcess) kbHookProcess = null;
+      kbHookReady = false;
+      if (kbHookReadyTimer) {
+        clearTimeout(kbHookReadyTimer);
+        kbHookReadyTimer = null;
+      }
+      log.info('[KIOSK] Keyboard hook process keluar, kode:', code);
+      scheduleKeyboardHookRestart(`process-exit-${code}`);
+    });
+
+    hookProcess.on('error', (err) => {
+      if (kbHookProcess === hookProcess) kbHookProcess = null;
+      kbHookReady = false;
+      log.error('[KIOSK] Gagal menjalankan keyboard hook:', err.message);
+      scheduleKeyboardHookRestart('spawn-error');
+    });
+
+    kbHookReadyTimer = setTimeout(() => {
+      kbHookReadyTimer = null;
+      if (kbHookProcess !== hookProcess || kbHookReady || !isKioskLocked()) return;
+      log.error('[KIOSK] Keyboard hook tidak siap dalam 5 detik; proses akan dimulai ulang.');
+      kbHookProcess = null;
+      try { hookProcess.kill(); } catch {}
+      scheduleKeyboardHookRestart('ready-timeout');
+    }, 5000);
+
+    log.info('[KIOSK] Memulai Windows keyboard hook (PID:', hookProcess.pid, '), script:', ps1Path);
   } catch (err) {
-    log.warn('[KIOSK] Error saat memulai keyboard hook:', err.message);
     kbHookProcess = null;
+    kbHookReady = false;
+    log.error('[KIOSK] Error saat memulai keyboard hook:', err.message);
+    scheduleKeyboardHookRestart('start-exception');
   }
 }
 
 function stopKeyboardHook() {
   if (process.platform !== 'win32') return;
 
-  // Kirim sinyal stop via flag file
+  clearKeyboardHookTimers();
+  kbHookReady = false;
+
   if (kbHookFlagPath) {
     try { fs.writeFileSync(kbHookFlagPath, 'stop', 'utf-8'); } catch {}
   }
 
-  // Kill proses jika masih berjalan setelah 1 detik
-  if (kbHookProcess) {
+  const hookProcess = kbHookProcess;
+  kbHookProcess = null;
+  if (hookProcess) {
     setTimeout(() => {
-      if (kbHookProcess) {
-        try { kbHookProcess.kill(); } catch {}
-        kbHookProcess = null;
+      if (!hookProcess.killed) {
+        try { hookProcess.kill(); } catch {}
       }
     }, 1000);
   }
 
   log.info('[KIOSK] Windows keyboard hook dihentikan');
 }
-
-// ── Windows Taskbar Hide/Show (sembunyikan taskbar saat lock) ──────────────
+// ── Windows Taskbar Hide/Show (sembunyikan taskbar saat lock) ────────────────────────────────
 let taskbarHideScript = null;
 
 function getTaskbarScriptPath() {
@@ -247,8 +393,9 @@ const screenShareState = {
   pcName:      os.hostname(),
 };
 
-// â"€â"€ Activity Monitor Instance â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+//  Activity Monitor Instance
 let activityMonitor = null;
+let activeSessionId = null;
 const CAPTURE_PROFILES = {
   overview: {
     mode: 'overview',
@@ -267,7 +414,7 @@ const CAPTURE_PROFILES = {
 };
 let captureProfileMode = 'overview';
 
-// â”€â”€ Ukuran widget per mode â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Ukuran widget per mode ───────────────────────────────────────
 const SIZES = {
   minimized:  { width: 300, height: 72  },
   regular:    { width: 340, height: 430 },
@@ -286,7 +433,9 @@ function getCenter(w, h) {
 }
 
 function isKioskLocked() {
-  return Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isKiosk() && mainWindow.isFullScreen());
+  // Gunakan state yang diinginkan, bukan state window sesaat. Saat Alt+Tab atau
+  // shell Windows memaksa keluar fullscreen, isFullScreen() dapat sempat false.
+  return Boolean(lockModeEnabled && mainWindow && !mainWindow.isDestroyed());
 }
 
 function keepWindowVisible() {
@@ -305,12 +454,12 @@ function keepWindowVisible() {
       mainWindow.show();
       mainWindow.focus();
       mainWindow.moveTop();
-      
+
       // Force focus dengan teknik ganda
       if (process.platform === 'win32') {
         mainWindow.blur();
         mainWindow.focus();
-        
+
         // Tambahan: set level always on top lebih tinggi
         mainWindow.setAlwaysOnTop(false);
         mainWindow.setAlwaysOnTop(true, 'screen-saver', 1);
@@ -361,12 +510,12 @@ function requestControlledQuit(reason) {
 
 function startAggressiveFocusLoop() {
   if (aggressiveFocusInterval) return;
-  
+
   // Loop yang terus-menerus memaksa window tetap di depan saat lock mode
   // Interval 50ms: sangat agresif agar user tidak sempat lihat jendela lain
   aggressiveFocusInterval = setInterval(() => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
-    
+
     if (isKioskLocked()) {
       // Pastikan window selalu di depan dan fullscreen
       if (!mainWindow.isFocused()) {
@@ -377,29 +526,35 @@ function startAggressiveFocusLoop() {
       if (!mainWindow.isFullScreen()) mainWindow.setFullScreen(true);
     }
   }, 50); // Setiap 50ms cek dan pulihkan fokus
-  
+
   log.info('[KIOSK] Aggressive focus loop dimulai');
 }
 
 function stopAggressiveFocusLoop() {
   if (!aggressiveFocusInterval) return;
-  
+
   clearInterval(aggressiveFocusInterval);
   aggressiveFocusInterval = null;
   log.info('[KIOSK] Aggressive focus loop dihentikan');
 }
 
+let currentLayoutMode = 'login';
+let attentionModeOn = false;
+let preAttentionLayoutMode = null;
+
 function applyWindowLayout(mode = 'regular') {
   if (!mainWindow || mainWindow.isDestroyed()) return;
+  currentLayoutMode = mode;
 
   const isLoginLayout = mode === 'login';
+  lockModeEnabled = isLoginLayout;
   mainWindow.setResizable(true);
 
   if (isLoginLayout) {
     mainWindow.setBounds(screen.getPrimaryDisplay().bounds, true);
     mainWindow.setKiosk(true);
     mainWindow.setFullScreen(true);
-    
+
     // Mulai aggressive focus loop dan keyboard hook untuk mode lock
     startAggressiveFocusLoop();
     startKeyboardHook();
@@ -413,7 +568,7 @@ function applyWindowLayout(mode = 'regular') {
     mainWindow.setKiosk(false);
     mainWindow.setFullScreen(false);
     mainWindow.setBounds({ x, y, width: size.width, height: size.height }, true);
-    
+
     // Hentikan aggressive focus loop dan keyboard hook untuk mode widget
     stopAggressiveFocusLoop();
     stopKeyboardHook();
@@ -467,38 +622,37 @@ function applyCaptureProfile(mode = 'overview') {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    // â”€â”€ Kiosk & tampilan â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Kiosk & tampilan ─────────────────────────────────────────
     kiosk:          true,   // Full screen mutlak, tutupi taskbar
     fullscreen:     true,
     alwaysOnTop:    true,
     frame:          false,  // Hapus title bar / window border
-    transparent:    true,   // Background OS transparan â†’ widget melayang
+    transparent:    true,   // Background OS transparan →’ widget melayang
     skipTaskbar:    true,   // Sembunyikan dari taskbar Windows
     movable:        false,
     autoHideMenuBar:true,
     hasShadow:      true,
 
-    // â”€â”€ Nonaktifkan close akibat tombol â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Nonaktifkan close akibat tombol ───────────────────────────
     closable:       false,
     minimizable:    false,
     maximizable:    false,
     resizable:      false,
 
-    // â”€â”€ Keamanan Electron â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Keamanan Electron ────────────────────────────────────────
     webPreferences: {
       preload:           path.join(__dirname, 'preload.js'),
       contextIsolation:  true,
       nodeIntegration:   false,
       devTools:          allowDevTools,
       spellcheck:        false,
-      webSecurity:       false,  // izinkan fetch dari file:// ke http://
     },
   });
   mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   mainWindow.setMenuBarVisibility(false);
   mainWindow.removeMenu();
 
-  // â”€â”€ Load URL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Load URL ─────────────────────────────────────────────────
   if (isDev) {
     mainWindow.loadURL('http://localhost:5173');
     if (allowDevTools) {
@@ -508,17 +662,17 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
 
-  // â”€â”€ Cegah navigasi keluar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Cegah navigasi keluar ─────────────────────────────────────
   mainWindow.webContents.on('will-navigate', (e, url) => {
     if (!url.startsWith('http://localhost:5173') && !url.startsWith('file://')) {
       e.preventDefault();
     }
   });
 
-  // â”€â”€ Cegah buka jendela baru â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Cegah buka jendela baru ───────────────────────────────────
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 
-  // ── Blokir Alt+F4 dan shortcut berbahaya di level webContents ─────────
+  // ── Blokir Alt+F4 dan shortcut berbahaya di level webContents ────────────────────────────────
   // globalShortcut TIDAK bisa menangkap Alt+F4 saat window fokus di Windows.
   // before-input-event menangkap keystroke SEBELUM Chromium/OS memprosesnya.
   mainWindow.webContents.on('before-input-event', (event, input) => {
@@ -556,8 +710,8 @@ function createWindow() {
     scheduleFocusRecovery(0);
   });
 
-  // Electron tidak bisa benar-benar memblokir Alt+Tab di Windows.
-  // Yang bisa kita lakukan adalah memulihkan fokus kiosk secepat mungkin.
+  // Low-level hook memblokir shortcut sistem; recovery fokus ini menjadi fallback
+  // jika Windows sempat memindahkan fokus atau shell dimulai ulang.
   mainWindow.on('blur', () => {
     if (isKioskLocked()) {
       // Mode login: recovery sangat agresif
@@ -596,6 +750,11 @@ function createWindow() {
   mainWindow.on('move', (event) => {
     if (isKioskLocked()) event.preventDefault();
   });
+  // Start keyboard hook immediately on launch (kiosk starts in login mode)
+  startAggressiveFocusLoop();
+  startKeyboardHook();
+  hideTaskbar();
+
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     log.error('[WINDOW] render-process-gone:', details);
     setTimeout(() => {
@@ -611,15 +770,34 @@ function createWindow() {
   });
 }
 
-// â”€â”€ IPC: Kirim hostname PC ke renderer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── IPC: Kirim hostname PC ke renderer ───────────────────────────
 ipcMain.handle('get-pc-name', () => os.hostname());
 
-// â”€â”€ IPC: Baca / Simpan konfigurasi URL server â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── IPC: Token device untuk socket renderer ────────────────────────────────
+ipcMain.handle('get-client-token', async () => {
+  const cfg = loadServerConfig();
+  return await ensureClientToken(cfg.serverUrl);
+});
+
+// ── IPC: Verifikasi emergency password (offline exit) ────────────────────────────────
+// Password disimpan di main process supaya tidak ter-bundle di JS renderer.
+// Bisa di-override via env LABKOM_EMERGENCY_PASSWORD saat build/install.
+const EMERGENCY_PASSWORD = process.env.LABKOM_EMERGENCY_PASSWORD || null;
+ipcMain.handle('verify-emergency-password', (_event, password) => {
+  if (!EMERGENCY_PASSWORD || typeof password !== 'string' || !password) return false;
+  // Constant-time compare biar tidak bocor via timing
+  const a = Buffer.from(password);
+  const b = Buffer.from(EMERGENCY_PASSWORD);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+});
+
+// ── IPC: Baca / Simpan konfigurasi URL server ────────────────────
 ipcMain.handle('get-server-url', () => {
   const cfg = loadServerConfig();
   return cfg.serverUrl || null;
 });
 ipcMain.on('save-server-url', (_event, url) => {
+  if (!isAllowedLabServerUrl(url)) return;
   const cfg = loadServerConfig();
   cfg.serverUrl = url;
   saveServerConfig(cfg);
@@ -643,7 +821,7 @@ function getPresencePayload() {
   };
 }
 
-function connectRealtime(serverUrl) {
+async function connectRealtime(serverUrl) {
   if (!serverUrl) return;
 
   try {
@@ -655,11 +833,17 @@ function connectRealtime(serverUrl) {
       realtimeSocket = null;
     }
 
+    const clientToken = await ensureClientToken(serverUrl);
+    if (!clientToken) {
+      logScreenWarning('[REALTIME] Tidak bisa register device ke server. Akan retry pada koneksi berikut.');
+      return;
+    }
+
     realtimeSocket = io(nextOrigin, {
       transports: ['websocket', 'polling'],
       reconnection: true,
       timeout: 5000,
-      auth: { role: 'client' },
+      auth: { role: 'client', client_token: clientToken },
     });
 
     realtimeSocket.on('connect', () => {
@@ -682,9 +866,18 @@ function connectRealtime(serverUrl) {
       applyCaptureProfile('overview');
     });
 
-    realtimeSocket.on('connect_error', (err) => {
+    realtimeSocket.on('connect_error', async (err) => {
       applyCaptureProfile('overview');
       logScreenWarning(`[REALTIME] Gagal terhubung ke server realtime: ${err.message}`);
+      // Jika unauthorized → token mungkin expired/revoked. Hapus & register ulang.
+      if (String(err.message || '').toLowerCase().includes('unauthorized')) {
+        log.warn('[DEVICE-AUTH] Token ditolak server, register ulang...');
+        setStoredClientToken(null);
+        const fresh = await requestDeviceToken(serverUrl);
+        if (fresh && realtimeSocket) {
+          realtimeSocket.auth = { role: 'client', client_token: fresh };
+        }
+      }
     });
   } catch (err) {
     logScreenWarning(`[REALTIME] Konfigurasi server realtime tidak valid: ${err.message}`);
@@ -718,7 +911,7 @@ function stopPresenceHeartbeat() {
   presenceHeartbeatTimer = null;
 }
 
-// â”€â”€ Screen sharing: capture & upload ke server â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Screen sharing: capture & upload ke server ───────────────────────────
 function postScreenshot() {
   if (!screenShareState.active || !screenShareState.serverUrl || screenCaptureInFlight) return;
   screenCaptureInFlight = true;
@@ -749,12 +942,15 @@ function postScreenshot() {
 
     try {
       const parsed = new URL(`${screenShareState.serverUrl}/api/screens`);
+      const headers = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) };
+      const tok = getStoredClientToken();
+      if (tok) headers.Authorization = `Bearer ${tok}`;
       const req    = http.request({
         hostname: parsed.hostname,
         port:     parseInt(parsed.port) || 3001,
         path:     '/api/screens',
         method:   'POST',
-        headers:  { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+        headers,
       }, (res) => {
         res.resume();
       });
@@ -808,19 +1004,80 @@ function stopScreenShare() {
     const resolvedServerUrl = activeServerUrl || loadServerConfig().serverUrl;
     if (!resolvedServerUrl) return;
     const parsed = new URL(`${resolvedServerUrl}/api/screens/${encodeURIComponent(screenShareState.pcName)}`);
+    const headers = { 'Content-Type': 'application/json' };
+    const tok = getStoredClientToken();
+    if (tok) headers.Authorization = `Bearer ${tok}`;
     const req  = http.request({
       hostname: parsed.hostname, port: parseInt(parsed.port) || 3001,
       path:     parsed.pathname, method: 'DELETE',
-      headers:  { 'Content-Type': 'application/json' },
+      headers,
     }, () => {});
     req.on('error', () => {});
     req.end();
   } catch (_) {}
 }
 
-// â”€â”€ IPC: Login berhasil â†’ keluar kiosk, tampilkan form pre-check â”€â”€
+function postActivityToServer(serverUrl, activity) {
+  if (!serverUrl || !activity) return;
+
+  const body = JSON.stringify(activity);
+  try {
+    const parsed = new URL(`${serverUrl}/api/activities`);
+    const headers = {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(body),
+    };
+    const tok = getStoredClientToken();
+    if (tok) headers.Authorization = `Bearer ${tok}`;
+    const req = http.request({
+      hostname: parsed.hostname,
+      port: parseInt(parsed.port) || 3001,
+      path: '/api/activities',
+      method: 'POST',
+      headers,
+    }, (res) => {
+      res.resume();
+    });
+    req.on('error', (err) => {
+      log.warn('[ACTIVITY] Gagal kirim activity via HTTP:', err.message);
+    });
+    req.setTimeout(5000, () => req.destroy());
+    req.write(body);
+    req.end();
+  } catch (err) {
+    log.warn('[ACTIVITY] URL server activity tidak valid:', err.message);
+  }
+}
+
+function startActivityMonitoring(studentData = {}) {
+  if (activityMonitor) {
+    activityMonitor.stop();
+    activityMonitor = null;
+  }
+
+  const cfg = loadServerConfig();
+  activityMonitor = new ActivityMonitor();
+  activityMonitor.setStudentInfo({
+    pc_name: screenShareState.pcName,
+    student_id: studentData.student_id || studentData.id || null,
+    student_name: studentData.nama_lengkap || studentData.student_name || null,
+    session_id: studentData.session_id || studentData.sessionId || null,
+  });
+  activityMonitor.onActivity((activity) => {
+    if (realtimeSocket?.connected) {
+      realtimeSocket.emit('client:activity', activity);
+      return;
+    }
+    postActivityToServer(cfg.serverUrl, activity);
+  });
+  activityMonitor.start();
+  log.info('[ACTIVITY] Monitoring dimulai untuk', studentData?.nama_lengkap);
+}
+
+// ── IPC: Login berhasil →’ keluar kiosk, tampilkan form pre-check ──
 ipcMain.on('login-success', (_event, studentData) => {
   if (!mainWindow) return;
+  activeSessionId = studentData?.session_id || studentData?.sessionId || null;
 
   applyWindowLayout('checklist');
   mainWindow.webContents.send('kiosk-off', studentData);
@@ -829,39 +1086,49 @@ ipcMain.on('login-success', (_event, studentData) => {
   const cfg = loadServerConfig();
   if (cfg.serverUrl) {
     startScreenShare(cfg.serverUrl, studentData?.nama_lengkap);
-    
-    // Start Activity Monitoring
-    if (activityMonitor) {
-      activityMonitor.stop();
-      activityMonitor = null;
-    }
-    
-    activityMonitor = new ActivityMonitor({
-      socket: realtimeSocket,
-      studentId: studentData?.id,
-      studentName: studentData?.nama_lengkap,
-      pcName: screenShareState.pcName,
-      sessionId: studentData?.sessionId || null,
-    });
-    
-    activityMonitor.start();
-    log.info('[ACTIVITY] Monitoring dimulai untuk', studentData?.nama_lengkap);
+    startActivityMonitoring(studentData);
   }
 });
 
-// â”€â”€ IPC: Resize widget dari React â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── IPC: Resize widget dari React ────────────────────────────────
 // mode: 'minimized' | 'regular' | 'expanded' | 'checklist'
 ipcMain.on('resize-window', (_event, mode) => {
   if (!mainWindow) return;
+  // Saat attention mode aktif, jangan ubah layout — simpan untuk restore nanti
+  if (attentionModeOn) {
+    preAttentionLayoutMode = mode;
+    return;
+  }
   applyWindowLayout(mode);
 });
 
-// â”€â”€ IPC: Logout â†’ masuk kiosk lagi â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── IPC: Attention Mode dari server (via renderer) ────────────────────────────────
+// Saat enabled: paksa kiosk fullscreen + keyboard hook + hide taskbar
+// Saat disabled: kembalikan ke layout sebelumnya (widget/checklist)
+ipcMain.on('set-attention-mode', (_event, enabled) => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+
+  if (enabled && !attentionModeOn) {
+    attentionModeOn = true;
+    preAttentionLayoutMode = currentLayoutMode;
+    applyWindowLayout('login');
+    log.info('[ATTENTION] Aktif — paksa kiosk lock');
+  } else if (!enabled && attentionModeOn) {
+    attentionModeOn = false;
+    const restoreMode = preAttentionLayoutMode || 'regular';
+    preAttentionLayoutMode = null;
+    applyWindowLayout(restoreMode);
+    log.info('[ATTENTION] Nonaktif — restore layout:', restoreMode);
+  }
+});
+
+// ── IPC: Logout →’ masuk kiosk lagi ───────────────────────────────
 ipcMain.on('do-logout', () => {
   if (!mainWindow) return;
+  activeSessionId = null;
 
   stopScreenShare(); // ← hentikan screen share
-  
+
   // Stop Activity Monitoring
   if (activityMonitor) {
     activityMonitor.stop();
@@ -874,13 +1141,14 @@ ipcMain.on('do-logout', () => {
   mainWindow.webContents.send('return-to-login');
 });
 
-// â”€â”€ IPC: Keluar aplikasi (setelah password kepala lab terverifikasi) â”€â”€
+// ── IPC: Keluar aplikasi (setelah password kepala lab terverifikasi) ──
 ipcMain.on('quit-app', () => {
   requestControlledQuit('admin-verified-exit');
 });
 
-// â”€â”€ IPC: Verify server dari main process (bypass renderer fetch restriction) â”€â”€
+// ── IPC: Verify server dari main process (bypass renderer fetch restriction) ──
 ipcMain.handle('verify-server', async (_event, url) => {
+  if (!isAllowedLabServerUrl(url)) return { ok: false, labkom: false };
   return new Promise((resolve) => {
     const parsed = new URL(url);
     const req = http.request(
@@ -902,14 +1170,14 @@ ipcMain.handle('verify-server', async (_event, url) => {
   });
 });
 
-// â”€â”€ IPC: Keluar dari setup screen (belum login, aman untuk keluar) â”€â”€
+// ── IPC: Keluar dari setup screen (belum login, aman untuk keluar) ──
 ipcMain.on('exit-app', () => {
   requestControlledQuit('setup-exit');
 });
 
-// â•â•â• Remote Power Control â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══ Remote Power Control ═════════════════════════════════════════════════
 
-// â”€â”€ Helper MAC address â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Helper MAC address ────────────────────────────────────────────────────
 function getFirstMac() {
   const ifaces = os.networkInterfaces();
   for (const name of Object.keys(ifaces)) {
@@ -922,7 +1190,7 @@ function getFirstMac() {
   return { mac: null, ip: null };
 }
 
-// â”€â”€ Daftarkan MAC ke server â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Daftarkan MAC ke server ───────────────────────────────────────────────
 function registerMacToServer() {
   const cfg = loadServerConfig();
   if (!cfg.serverUrl) return;
@@ -939,13 +1207,17 @@ function registerMacToServer() {
     const req = http.request({
       hostname: parsed.hostname, port: parseInt(parsed.port) || 3001,
       path: '/api/client-cmd/register-mac', method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+        Authorization: `Bearer ${getStoredClientToken() || ''}`,
+      },
     }, () => {});
     req.on('error', () => {}); req.setTimeout(4000, () => req.destroy()); req.write(body); req.end();
   } catch (_) {}
 }
 
-// â”€â”€ Install watchdog via Windows Task Scheduler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Install watchdog via Windows Task Scheduler ───────────────────────────
 function installWatchdog() {
   if (isDev) return;
   try {
@@ -953,6 +1225,7 @@ function installWatchdog() {
     const userData = app.getPath('userData');
     const flagPath = path.join(userData, 'disabled.flag');
     const cfgPath  = path.join(userData, 'server.config.json');
+    const devicePath = getDevicePath();
     const ps1Path  = path.join(userData, 'labkom-watchdog.ps1');
     const exeEsc   = exePath.replace(/'/g, "''");
 
@@ -960,19 +1233,25 @@ function installWatchdog() {
       `$appPath  = '${exeEsc}'`,
       `$flagPath = '${flagPath.replace(/'/g, "''")}'`,
       `$cfgPath  = '${cfgPath.replace(/'/g, "''")}'`,
+      `$devicePath = '${devicePath.replace(/'/g, "''")}'`,
       '',
       `$isRunning = (Get-Process -Name 'LabKom Siswa' -ErrorAction SilentlyContinue) -ne $null`,
       `if ($isRunning) { exit 0 }`,
       '',
       `$serverUrl = $null`,
+      `$clientToken = $null`,
       `if (Test-Path $cfgPath) {`,
       `  try { $cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json; $serverUrl = $cfg.serverUrl } catch {}`,
+      `}`,
+      `if (Test-Path $devicePath) {`,
+      `  try { $device = Get-Content $devicePath -Raw | ConvertFrom-Json; $clientToken = $device.client_token } catch {}`,
       `}`,
       '',
       `$cmd = 'none'`,
       `if ($serverUrl) {`,
       `  try {`,
-      `    $r = Invoke-WebRequest -Uri "$serverUrl/api/client-cmd/current" -TimeoutSec 4 -UseBasicParsing`,
+      `    $headers = @{ Authorization = "Bearer $clientToken" }`,
+      `    $r = Invoke-WebRequest -Uri "$serverUrl/api/client-cmd/current" -Headers $headers -TimeoutSec 4 -UseBasicParsing`,
       `    $cmd = ($r.Content | ConvertFrom-Json).cmd`,
       `  } catch {}`,
       `}`,
@@ -997,7 +1276,7 @@ function installWatchdog() {
   }
 }
 
-// â”€â”€ Polling perintah remote dari server â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Polling perintah remote dari server ──────────────────────────────────
 let cmdPollTimer = null;
 function startCmdPolling() {
   if (cmdPollTimer) return;
@@ -1009,6 +1288,7 @@ function startCmdPolling() {
       const req = http.request({
         hostname: parsed.hostname, port: parseInt(parsed.port) || 3001,
         path: '/api/client-cmd/current', method: 'GET',
+        headers: { Authorization: `Bearer ${getStoredClientToken() || ''}` },
       }, (res) => {
         let body = '';
         res.on('data', d => body += d);
@@ -1016,7 +1296,7 @@ function startCmdPolling() {
           try {
             const json = JSON.parse(body);
             if (json.cmd === 'kill') {
-              log.info('[CMD] Perintah kill diterima â€“ menutup aplikasi');
+              log.info('[CMD] Perintah kill diterima  menutup aplikasi');
               stopScreenShare();
               if (json.permanent) {
                 const fp = path.join(app.getPath('userData'), 'disabled.flag');
@@ -1041,42 +1321,77 @@ function startCmdPolling() {
   }, 10_000);
 }
 
-// â”€â”€ Auto force-logout ke server saat app mau ditutup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function forceLogoutOnQuit() {
-  const pcName = os.hostname();
+// ── Auto force-logout ke server saat app mau ditutup ─────────────
+function logoutActiveSessionOnQuit() {
   const cfg = loadServerConfig();
-  if (!cfg.serverUrl) return;
-  // Gunakan Node.js http langsung untuk cleanup sesi saat app ditutup
+  const token = getStoredClientToken();
+  if (!cfg.serverUrl || !activeSessionId || !token) return;
   try {
-    const parsed = new URL(`${cfg.serverUrl}/api/auth/force-logout`);
-    const body = JSON.stringify({ pc_name: pcName });
-    const req = http.request(
-      { host: parsed.hostname, port: parseInt(parsed.port) || 3001, path: '/api/auth/force-logout', method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } },
-      () => {}
-    );
+    const parsed = new URL(`${cfg.serverUrl}/api/auth/logout`);
+    const body = JSON.stringify({ session_id: activeSessionId });
+    const req = http.request({
+      host: parsed.hostname,
+      port: parseInt(parsed.port) || 3001,
+      path: '/api/auth/logout',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+        Authorization: `Bearer ${token}`,
+      },
+    }, () => {});
     req.on('error', () => {});
     req.write(body);
     req.end();
   } catch (_) {}
 }
-// â”€â”€ IPC: Request HTTP umum dari renderer (Node.js http, bypass Chromium) â”€â”€â”€â”€
-ipcMain.handle('api-request', (_event, url, options = {}) => {
+// ── IPC: Request HTTP renderer, dibatasi ke backend LabKom tersimpan ──────
+function isAllowedRendererApiUrl(parsed) {
+  if (!isAllowedLabServerUrl(parsed.origin)) return false;
+  if (!parsed.pathname.startsWith('/api/')) return false;
+  const configuredUrl = loadServerConfig().serverUrl;
+  if (!configuredUrl) return false;
+  try {
+    return parsed.origin === new URL(configuredUrl).origin;
+  } catch {
+    return false;
+  }
+}
+
+function performRendererApiRequest(parsed, options, clientToken) {
   return new Promise((resolve) => {
-    let parsed;
-    try { parsed = new URL(url); } catch { return resolve({ ok: false, status: 0, data: null }); }
-    const bodyStr = options.body || '';
-    const reqOpts = {
+    const bodyStr = typeof options.body === 'string' ? options.body : '';
+    if (Buffer.byteLength(bodyStr) > 2 * 1024 * 1024) {
+      return resolve({ ok: false, status: 413, data: { success: false, message: 'Payload terlalu besar.' } });
+    }
+
+    const method = String(options.method || 'GET').toUpperCase();
+    if (!['GET', 'POST', 'PUT', 'DELETE'].includes(method)) {
+      return resolve({ ok: false, status: 405, data: { success: false, message: 'Method tidak diizinkan.' } });
+    }
+
+    const headers = { 'Content-Type': 'application/json' };
+    if (clientToken) headers.Authorization = `Bearer ${clientToken}`;
+    if (bodyStr) headers['Content-Length'] = Buffer.byteLength(bodyStr);
+
+    const req = http.request({
       hostname: parsed.hostname,
-      port:     parseInt(parsed.port) || 3001,
-      path:     parsed.pathname + (parsed.search || ''),
-      method:   (options.method || 'GET').toUpperCase(),
-      headers:  { 'Content-Type': 'application/json', ...(options.headers || {}) },
-    };
-    if (bodyStr) reqOpts.headers['Content-Length'] = Buffer.byteLength(bodyStr);
-    const req = http.request(reqOpts, (res) => {
+      port: parseInt(parsed.port) || 3001,
+      path: parsed.pathname + (parsed.search || ''),
+      method,
+      headers,
+    }, (res) => {
       let body = '';
-      res.on('data', (d) => body += d);
+      let bytes = 0;
+      res.on('data', (chunk) => {
+        bytes += chunk.length;
+        if (bytes > 2 * 1024 * 1024) {
+          req.destroy();
+          resolve({ ok: false, status: 502, data: { success: false, message: 'Respons server terlalu besar.' } });
+          return;
+        }
+        body += chunk;
+      });
       res.on('end', () => {
         try { resolve({ ok: res.statusCode < 400, status: res.statusCode, data: JSON.parse(body) }); }
         catch { resolve({ ok: res.statusCode < 400, status: res.statusCode, data: body }); }
@@ -1087,10 +1402,28 @@ ipcMain.handle('api-request', (_event, url, options = {}) => {
     if (bodyStr) req.write(bodyStr);
     req.end();
   });
-});
+}
 
+ipcMain.handle('api-request', async (_event, url, options = {}) => {
+  let parsed;
+  try { parsed = new URL(url); }
+  catch { return { ok: false, status: 400, data: { success: false, message: 'URL tidak valid.' } }; }
+
+  if (!isAllowedRendererApiUrl(parsed)) {
+    return { ok: false, status: 403, data: { success: false, message: 'Target API tidak diizinkan.' } };
+  }
+
+  let result = await performRendererApiRequest(parsed, options, getStoredClientToken());
+  if (result.status === 401) {
+    setStoredClientToken(null);
+    const freshToken = await requestDeviceToken(parsed.origin);
+    if (freshToken) result = await performRendererApiRequest(parsed, options, freshToken);
+  }
+  return result;
+
+});
 app.whenReady().then(() => {
-  // â”€â”€ Daftarkan ke Windows Startup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Daftarkan ke Windows Startup ─────────────────────────────
   // Agar app otomatis berjalan saat PC dinyalakan (kiosk mode)
   if (!isDev) {
     app.setLoginItemSettings({
@@ -1102,7 +1435,7 @@ app.whenReady().then(() => {
 
   createWindow();
   applyWindowLayout('login');
-  startDiscoveryListener(); // â† Dengarkan broadcast admin
+  startDiscoveryListener(); // → Dengarkan broadcast admin
 
   const initialConfig = loadServerConfig();
   if (initialConfig.serverUrl) connectRealtime(initialConfig.serverUrl);
@@ -1124,14 +1457,14 @@ app.whenReady().then(() => {
     }, 30_000);
   }
 
-  // â”€â”€ Shortcut keluar untuk Kepala Lab (Ctrl+Alt+Q) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Shortcut keluar untuk Kepala Lab (Ctrl+Alt+Q) ───────────────
   globalShortcut.register('Ctrl+Alt+Q', () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('show-admin-dialog');
     }
   });
 
-  // â”€â”€ Blokir shortcut berbahaya â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Blokir shortcut berbahaya ─────────────────────────────────
   // Alt+F4, Ctrl+W, Ctrl+F4 (close window)
   globalShortcut.register('Alt+F4',  () => {});
   globalShortcut.register('Ctrl+W',  () => {});
@@ -1181,7 +1514,7 @@ app.on('before-quit', (event) => {
     preventUnexpectedQuit(event);
     return;
   }
-  forceLogoutOnQuit();
+  logoutActiveSessionOnQuit();
 });
 app.on('second-instance', () => {
   if (!mainWindow || mainWindow.isDestroyed()) return;
@@ -1196,12 +1529,12 @@ app.on('will-quit', () => {
   stopKeyboardHook();
   showTaskbar(); // Safety net: selalu pulihkan taskbar
   if (cmdPollTimer) { clearInterval(cmdPollTimer); cmdPollTimer = null; }
-  
+
   // Cleanup Activity Monitor
   if (activityMonitor) {
     activityMonitor.stop();
     activityMonitor = null;
   }
-  
+
   globalShortcut.unregisterAll();
 });

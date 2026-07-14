@@ -7,7 +7,9 @@ import CheckConditionForm from './CheckConditionForm.jsx';
 import PostSessionCheck from './PostSessionCheck.jsx';
 import AttentionModeOverlay from './AttentionModeOverlay.jsx';
 import ChatBubble from './ChatBubble.jsx';
+import AdminScreenShare from './AdminScreenShare.jsx';
 import { apiCall } from './api.js';
+import logoSekolah from '../public/logo-sekolah.png';
 
 // ── Mode layar ──────────────────────────────────────────────────────
 // 'loading'   → menunggu load konfigurasi server dari storage
@@ -209,47 +211,63 @@ export default function App() {
       return;
     }
 
-    // Connect socket untuk listen attention mode dari admin
-    const socket = io(serverUrl, {
-      transports: ['websocket', 'polling'],
-      auth: { role: 'client' },
-      reconnection: true,
-      reconnectionDelay: 1000,
-      reconnectionAttempts: 5,
-    });
+    let socket;
+    let cancelled = false;
 
-    socketRef.current = socket;
-
-    // Listen for attention mode from admin
-    socket.on('attention-mode', (payload) => {
-      console.log('[Attention Mode] Received:', payload);
-      setAttentionMode({
-        enabled: payload.enabled,
-        message: payload.message || 'Mohon perhatian ke instruktur',
+    const attachSocketListeners = (s) => {
+      s.on('attention-mode', (payload) => {
+        console.log('[Attention Mode] Received:', payload);
+        setAttentionMode({
+          enabled: payload.enabled,
+          message: payload.message || 'Mohon perhatian ke instruktur',
+        });
+        window.electronAPI?.setAttentionMode?.(Boolean(payload.enabled));
       });
-    });
 
-    socket.on('connect', () => {
-      console.log('[Socket] Connected to server for attention mode');
-    });
+      s.on('connect', () => {
+        console.log('[Socket] Connected to server for attention mode');
+        s.emit('client:hello', {
+          pc_name: pcName,
+          student_name: studentData?.nama_lengkap || null,
+        });
+      });
 
-    socket.on('disconnect', () => {
-      console.log('[Socket] Disconnected from server');
-      // Auto-disable attention mode saat disconnect
-      setAttentionMode({ enabled: false, message: '' });
-    });
+      s.on('disconnect', () => {
+        console.log('[Socket] Disconnected from server');
+        setAttentionMode({ enabled: false, message: '' });
+      });
 
-    socket.on('connect_error', (error) => {
-      console.error('[Socket] Connection error:', error);
-    });
+      s.on('connect_error', (error) => {
+        console.error('[Socket] Connection error:', error);
+      });
+    };
+
+    (async () => {
+      const clientToken = await window.electronAPI?.getClientToken?.();
+      if (cancelled) return;
+      if (!clientToken) {
+        console.warn('[Socket] Tidak ada client token, socket realtime tidak akan dibuka.');
+        return;
+      }
+
+      socket = io(serverUrl, {
+        transports: ['websocket', 'polling'],
+        auth: { role: 'client', client_token: clientToken },
+        reconnection: true,
+        reconnectionDelay: 1000,
+        reconnectionAttempts: 5,
+      });
+
+      socketRef.current = socket;
+      attachSocketListeners(socket);
+    })();
 
     return () => {
-      if (socket) {
-        socket.disconnect();
-      }
+      cancelled = true;
+      if (socket) socket.disconnect();
       socketRef.current = null;
     };
-  }, [serverUrl, mode]);
+  }, [serverUrl, mode, pcName, studentData?.nama_lengkap]);
 
   // ── Klik 5x pojok kiri bawah → buka dialog admin ────────────────
   const handleCornerClick = useCallback(() => {
@@ -491,15 +509,30 @@ export default function App() {
     );
   }
 
-  // ── Mode Widget (pasca-login) ───────────────────────────────
+  // ── Overlays shared across all post-setup modes ──────────────────
+  const sharedOverlays = (
+    <>
+      <AdminScreenShare socket={socketRef.current} />
+      <AttentionModeOverlay
+        enabled={attentionMode.enabled}
+        message={attentionMode.message}
+        onAcknowledge={() => socketRef.current?.emit('client:attention-ack', {})}
+      />
+    </>
+  );
+
+  // ── Mode Precheck ────────────────────────────────────────────────
   if (mode === MODE_PRECHECK) {
     return (
-      <CheckConditionForm
-        studentData={studentData}
-        serverUrl={serverUrl}
-        pcName={pcName}
-        onComplete={() => setMode(MODE_WIDGET)}
-      />
+      <>
+        {sharedOverlays}
+        <CheckConditionForm
+          studentData={studentData}
+          serverUrl={serverUrl}
+          pcName={pcName}
+          onComplete={() => setMode(MODE_WIDGET)}
+        />
+      </>
     );
   }
 
@@ -507,15 +540,14 @@ export default function App() {
   if (mode === MODE_WIDGET) {
     return (
       <>
+        {sharedOverlays}
         <LogoutWidget
           studentData={studentData}
           onRequestPostCheck={() => {
-            // Perluas jendela ke ukuran checklist sebelum tampilkan form post-sesi
             window.electronAPI?.resizeWindow('checklist');
             setMode(MODE_POSTCHECK);
           }}
           onLogoutComplete={() => {
-            // Fallback jika tidak pakai Electron (browser dev)
             if (!window.electronAPI?.doLogout) {
               setMode(MODE_LOGIN);
               setNis('');
@@ -525,7 +557,6 @@ export default function App() {
             }
           }}
         />
-        {/* Chat bubble for receiving admin messages */}
         <ChatBubble
           socket={socketRef.current}
           studentName={studentData?.nama_lengkap || ''}
@@ -535,46 +566,39 @@ export default function App() {
     );
   }
 
-  // ── Mode Post-Check (form checklist akhir sesi) ──────────────────────
+  // ── Mode Post-Check (form checklist akhir sesi) ──────────────────
   if (mode === MODE_POSTCHECK) {
     return (
-      <PostSessionCheck
-        studentData={studentData}
-        serverUrl={serverUrl}
-        onLogoutConfirmed={async () => {
-          // Jalankan logout ke server lalu kembali ke kiosk
-          try {
-            const sessionId = sessionStorage.getItem('session_id');
-            await apiCall(`${serverUrl}/api/auth/logout`, {
-              method:  'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body:    JSON.stringify({ session_id: Number(sessionId) }),
-            });
-          } catch (_) {}
-          sessionStorage.clear();
-          window.electronAPI?.doLogout();
-          if (!window.electronAPI?.doLogout) {
-            setMode(MODE_LOGIN);
-            setStudentData(null);
-          }
-        }}
-      />
+      <>
+        {sharedOverlays}
+        <PostSessionCheck
+          studentData={studentData}
+          serverUrl={serverUrl}
+          onLogoutConfirmed={async () => {
+            try {
+              const sessionId = sessionStorage.getItem('session_id');
+              await apiCall(`${serverUrl}/api/auth/logout`, {
+                method:  'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body:    JSON.stringify({ session_id: sessionId }),
+              });
+            } catch (_) {}
+            sessionStorage.clear();
+            window.electronAPI?.doLogout();
+            if (!window.electronAPI?.doLogout) {
+              setMode(MODE_LOGIN);
+              setStudentData(null);
+            }
+          }}
+        />
+      </>
     );
   }
 
   // ── Mode Login (kiosk fullscreen) ────────────────────────────────
   return (
     <>
-      {/* Attention Mode Overlay - Highest z-index, always on top */}
-      <AttentionModeOverlay
-        enabled={attentionMode.enabled}
-        message={attentionMode.message}
-        onAcknowledge={() => {
-          if (socketRef.current) {
-            socketRef.current.emit('client:attention-ack', {});
-          }
-        }}
-      />
+      {sharedOverlays}
 
       <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4 relative overflow-hidden font-sans">
 
@@ -622,7 +646,7 @@ export default function App() {
         <div className="p-10 flex flex-col justify-between text-white bg-gradient-to-br from-blue-600/50 to-indigo-900/50">
           <div>
             <img
-              src="/logo-sekolah.png"
+              src={logoSekolah}
               alt="Logo Sekolah Palembang Harapan"
               className="w-24 h-24 object-contain mb-6 drop-shadow-lg"
             />

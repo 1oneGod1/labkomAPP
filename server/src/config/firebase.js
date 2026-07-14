@@ -2,7 +2,6 @@
 // Untuk akses Firestore dari backend server
 
 const admin = require('firebase-admin');
-require('dotenv').config();
 
 // Firebase project credentials
 const firebaseConfig = {

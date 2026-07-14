@@ -1,4 +1,3 @@
-require('dotenv').config();
 const bcrypt = require('bcrypt');
 const {
   issueToken,
@@ -12,8 +11,7 @@ const { checkAllowed, registerFailure, clearFailures } = require('../services/ad
 const { logAdminAction } = require('../services/adminAuditService');
 
 function getRequestIp(req) {
-  const xff = req.headers['x-forwarded-for'];
-  if (typeof xff === 'string' && xff.trim()) return xff.split(',')[0].trim();
+  // Express tidak dikonfigurasi trust proxy; jangan percaya X-Forwarded-For dari client.
   return req.ip || req.socket?.remoteAddress || 'unknown';
 }
 
@@ -29,7 +27,8 @@ async function compareAdminPassword(input, stored) {
   if (stored.startsWith('$2b$') || stored.startsWith('$2a$')) {
     return bcrypt.compare(input, stored);
   }
-  // Fallback: plain-text comparison (backward compatibility)
+  // Plain-text hanya ditoleransi saat development agar produksi wajib memakai bcrypt.
+  if (process.env.NODE_ENV === 'production') return false;
   return input === stored;
 }
 
@@ -46,13 +45,24 @@ async function verifyPassword(req, res) {
     return res.status(500).json({ success: false, message: 'Admin password belum dikonfigurasi di server.' });
   }
 
+  const ipKey = getRequestIp(req);
+  const rate = checkAllowed(ipKey);
+  if (!rate.allowed) {
+    return res.status(429).json({
+      success: false,
+      message: 'Terlalu banyak percobaan. Coba lagi nanti.',
+    });
+  }
+
   const match = await compareAdminPassword(password, adminPassword);
   if (match) {
+    clearFailures(ipKey);
     console.log(`[ADMIN] Akses admin berhasil pada ${new Date().toLocaleString('id-ID')}`);
     logAdminAction(req, { action: 'ADMIN_VERIFY_PASSWORD', statusCode: 200, success: true }).catch(() => {});
     return res.status(200).json({ success: true, message: 'Password benar.' });
   }
 
+  registerFailure(ipKey);
   console.warn(`[ADMIN] Percobaan akses admin gagal pada ${new Date().toLocaleString('id-ID')}`);
   logAdminAction(req, { action: 'ADMIN_VERIFY_PASSWORD', statusCode: 401, success: false }).catch(() => {});
   return res.status(401).json({ success: false, message: 'Password salah.' });
@@ -155,4 +165,23 @@ function refreshToken(req, res) {
   });
 }
 
-module.exports = { verifyPassword, login, me, logout, refreshToken };
+// ── Device Claim Management ─────────────────────────────────────
+const clientTokenService = require('../services/clientTokenService');
+
+function listDeviceClaims(_req, res) {
+  res.json({ success: true, data: clientTokenService.listClaims() });
+}
+
+function revokeDeviceClaim(req, res) {
+  const { pc_name } = req.body || {};
+  if (!pc_name) {
+    return res.status(400).json({ success: false, message: 'pc_name wajib diisi.' });
+  }
+  const removed = clientTokenService.revokePcClaim(pc_name);
+  if (!removed) {
+    return res.status(404).json({ success: false, message: 'Claim untuk PC tersebut tidak ditemukan.' });
+  }
+  res.json({ success: true, message: `Claim untuk ${pc_name} telah dihapus. Device akan otomatis register ulang.` });
+}
+
+module.exports = { verifyPassword, login, me, logout, refreshToken, listDeviceClaims, revokeDeviceClaim };

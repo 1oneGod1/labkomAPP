@@ -1,9 +1,10 @@
-﻿/**
+/**
  * /api/client-cmd - Remote power control
  */
 const express = require('express');
 const router  = express.Router();
 const { requireAdmin } = require('../middleware/requireAdmin');
+const { requireDevice } = require('../middleware/requireClient');
 const { upsertClient, getClientRegistry } = require('../services/clientRegistryService');
 
 let currentCmd = { cmd: 'none', permanent: false, set_at: null };
@@ -30,7 +31,7 @@ router.post('/', requireAdmin, (req, res) => {
 });
 
 // Client: poll current command
-router.get('/current', (_req, res) => {
+router.get('/current', requireDevice, (_req, res) => {
   return res.json({
     success: true,
     cmd: currentCmd.cmd,
@@ -39,8 +40,9 @@ router.get('/current', (_req, res) => {
 });
 
 // Client: register MAC
-router.post('/register-mac', (req, res) => {
-  const { pc_name, mac, ip, student_name } = req.body;
+router.post('/register-mac', requireDevice, (req, res) => {
+  const { mac, ip, student_name } = req.body;
+  const pc_name = req.actor.pc_name;
   if (!pc_name || !mac) {
     return res.status(400).json({ success: false, message: 'pc_name dan mac wajib.' });
   }

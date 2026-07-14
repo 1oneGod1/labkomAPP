@@ -19,7 +19,9 @@ using System.Diagnostics;
 public class KeyboardBlocker {
     private const int WH_KEYBOARD_LL = 13;
     private const int WM_KEYDOWN     = 0x0100;
+    private const int WM_KEYUP       = 0x0101;
     private const int WM_SYSKEYDOWN  = 0x0104;
+    private const int WM_SYSKEYUP    = 0x0105;
 
     // Virtual key codes
     private const int VK_TAB    = 0x09;
@@ -157,7 +159,8 @@ public class KeyboardBlocker {
             if (fgWnd == hwnd) return; // Sudah fokus
 
             // Trick: attach ke thread foreground, set foreground, detach
-            uint fgThread = GetWindowThreadProcessId(fgWnd, out _);
+            uint ignoredProcessId;
+            uint fgThread = GetWindowThreadProcessId(fgWnd, out ignoredProcessId);
             uint ourThread = GetCurrentThreadId();
             if (fgThread != ourThread) {
                 AttachThreadInput(ourThread, fgThread, true);
@@ -176,7 +179,9 @@ public class KeyboardBlocker {
     private static IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam) {
         if (!IsRunning) return CallNextHookEx(_hookID, nCode, wParam, lParam);
 
-        if (nCode >= 0 && (wParam == (IntPtr)WM_KEYDOWN || wParam == (IntPtr)WM_SYSKEYDOWN)) {
+        if (nCode >= 0 && (
+            wParam == (IntPtr)WM_KEYDOWN || wParam == (IntPtr)WM_KEYUP ||
+            wParam == (IntPtr)WM_SYSKEYDOWN || wParam == (IntPtr)WM_SYSKEYUP)) {
             var kb = (KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(KBDLLHOOKSTRUCT));
             int vk = (int)kb.vkCode;
             bool altDown  = IsAltDown();

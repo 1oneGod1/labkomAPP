@@ -25,8 +25,19 @@ async function submitCheck(req, res) {
   }
 
   try {
+    const claimedPcName = req.actor?.role === 'client' ? req.actor.pc_name : pc_name;
+    if (req.actor?.role === 'client' && session_id) {
+      const session = await firebaseService.sessions.getById(session_id);
+      const ownsSession = session && (session.device_id
+        ? session.device_id === req.actor.device_id
+        : [session.pc_name, session.actual_pc_name].some((name) => String(name || '').toUpperCase() === claimedPcName));
+      if (!ownsSession) {
+        return res.status(403).json({ success: false, message: 'Sesi checklist bukan milik perangkat ini.' });
+      }
+    }
+
     const result = await firebaseService.checks.create({
-      session_id, nis, nama_lengkap, pc_name, check_type,
+      session_id, nis, nama_lengkap, pc_name: claimedPcName, check_type,
       cpu_status, cpu_note,
       monitor_status, monitor_note,
       desk_status, desk_note,

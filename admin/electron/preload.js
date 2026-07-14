@@ -10,8 +10,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onServerStatus: (cb) => ipcRenderer.on('server-status', (_e, data) => cb(data)),
 
   // ── Remote Power Control ─────────────────────────────────────────────────
-  sendClientCmd:  (cmd, permanent) => ipcRenderer.invoke('send-client-cmd', cmd, permanent),
-  getClientMacs:  ()               => ipcRenderer.invoke('get-client-macs'),
+  sendClientCmd:  (cmd, permanent, token) => ipcRenderer.invoke('send-client-cmd', cmd, permanent, token),
+  getClientMacs:  (token)                 => ipcRenderer.invoke('get-client-macs', token),
   wakeOnLan:      (mac)            => ipcRenderer.invoke('wake-on-lan', mac),
 
   // ── Auto-Update API ──────────────────────────────────────────────────────

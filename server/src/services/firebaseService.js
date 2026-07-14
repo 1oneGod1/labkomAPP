@@ -463,6 +463,8 @@ const sessionsService = {
     const data = {
       student_id: sessionData.student_id,
       pc_name: sessionData.pc_name || sessionData.computer_name,
+      actual_pc_name: sessionData.actual_pc_name || null,
+      device_id: sessionData.device_id || null,
       login_time: now,
       logout_time: null,
       duration_minutes: null,
