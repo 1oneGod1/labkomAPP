@@ -1,6 +1,6 @@
 {
   "name": "labkom-server",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "Backend server untuk aplikasi manajemen lab komputer",
   "main": "src/index.js",
   "scripts": {

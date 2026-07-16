@@ -1,6 +1,6 @@
 {
   "name": "labkom-admin",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "Dashboard administrasi dan pemantauan laboratorium komputer",
   "author": "LabKom",
   "type": "module",
@@ -9,7 +9,8 @@
     "dev:react": "vite --port 5174",
     "build:react": "vite build",
     "electron:dev": "set \"ELECTRON_RUN_AS_NODE=\" && concurrently \"npm.cmd run dev:react\" \"wait-on http://localhost:5174 && electron .\"",
-    "electron:build": "set \"ELECTRON_RUN_AS_NODE=\" && npm.cmd run build:react && electron-builder"
+    "electron:build": "set \"ELECTRON_RUN_AS_NODE=\" && npm.cmd run build:react && electron-builder",
+    "test": "node scripts/verify-screen-share-v2.cjs"
   },
   "dependencies": {
     "electron-log": "^5.4.3",

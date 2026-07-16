@@ -60,6 +60,10 @@ const allowDevTools = process.env.OPEN_ELECTRON_DEVTOOLS === '1';
 let allowAppQuit = false;
 let realtimeSocket = null;
 let presenceHeartbeatTimer = null;
+let serverCapabilities = {
+  student_screen_binary_v1: false,
+  multi_monitor_v1: false,
+};
 
 // ── Auto-Updater (silent background update) ──────────────────────────────────
 // Client: download otomatis di background, install saat app keluar
@@ -200,6 +204,7 @@ let focusRecoveryTimer = null;
 let aggressiveFocusInterval = null;
 let screenShareTimer   = null;
 let screenCaptureInFlight = false;
+let screenCaptureSequence = 0;
 let lockModeEnabled = true;
 
 // ── Windows Keyboard Hook (blokir Alt+Tab di level OS) ────────────────────────────────
@@ -409,10 +414,11 @@ const CAPTURE_PROFILES = {
     width: 1280,
     height: 720,
     jpegQuality: 65,
-    intervalMs: 450,
+    intervalMs: 250,
   },
 };
 let captureProfileMode = 'overview';
+let captureDisplayId = null;
 
 // ── Ukuran widget per mode ───────────────────────────────────────
 const SIZES = {
@@ -541,6 +547,7 @@ function stopAggressiveFocusLoop() {
 let currentLayoutMode = 'login';
 let attentionModeOn = false;
 let preAttentionLayoutMode = null;
+let preAdminExitLayoutMode = null;
 
 function applyWindowLayout(mode = 'regular') {
   if (!mainWindow || mainWindow.isDestroyed()) return;
@@ -593,6 +600,18 @@ function getCaptureProfile() {
   return CAPTURE_PROFILES[captureProfileMode] || CAPTURE_PROFILES.overview;
 }
 
+function getMonitorMetadata() {
+  const primaryDisplayId = String(screen.getPrimaryDisplay().id);
+  return screen.getAllDisplays().slice(0, 8).map((display, index) => ({
+    display_id: String(display.id),
+    label: `Monitor ${index + 1}${String(display.id) === primaryDisplayId ? ' (Utama)' : ''}`,
+    width: display.size.width,
+    height: display.size.height,
+    scale_factor: display.scaleFactor,
+    primary: String(display.id) === primaryDisplayId,
+  }));
+}
+
 function restartScreenShareLoop() {
   if (!screenShareState.active) return;
 
@@ -607,12 +626,16 @@ function restartScreenShareLoop() {
   }, profile.intervalMs);
 }
 
-function applyCaptureProfile(mode = 'overview') {
+function applyCaptureProfile(mode = 'overview', displayId = null) {
   const nextMode = CAPTURE_PROFILES[mode] ? mode : 'overview';
-  if (captureProfileMode === nextMode) return;
+  const nextDisplayId = nextMode === 'focus' && displayId != null
+    ? String(displayId).slice(0, 64)
+    : null;
+  if (captureProfileMode === nextMode && captureDisplayId === nextDisplayId) return;
 
   captureProfileMode = nextMode;
-  log.info(`[SCREEN] Capture profile -> ${nextMode}`);
+  captureDisplayId = nextDisplayId;
+  log.info(`[SCREEN] Capture profile -> ${nextMode}, monitor -> ${nextDisplayId || 'primary'}`);
   restartScreenShareLoop();
 
   if (screenShareState.active) {
@@ -818,6 +841,12 @@ function getPresencePayload() {
     mac: mac || null,
     ip: ip || null,
     student_name: screenShareState.studentName || null,
+    capabilities: {
+      admin_screen_binary_v1: true,
+      student_screen_binary_v1: true,
+      multi_monitor_v1: true,
+    },
+    monitors: getMonitorMetadata(),
   };
 }
 
@@ -839,6 +868,10 @@ async function connectRealtime(serverUrl) {
       return;
     }
 
+    serverCapabilities = {
+      student_screen_binary_v1: false,
+      multi_monitor_v1: false,
+    };
     realtimeSocket = io(nextOrigin, {
       transports: ['websocket', 'polling'],
       reconnection: true,
@@ -855,15 +888,25 @@ async function connectRealtime(serverUrl) {
       }
     });
 
+    realtimeSocket.on('server:capabilities', (capabilities = {}) => {
+      serverCapabilities = {
+        student_screen_binary_v1: Boolean(capabilities.student_screen_binary_v1),
+        multi_monitor_v1: Boolean(capabilities.multi_monitor_v1),
+      };
+      if (screenShareState.active) postScreenshot();
+    });
+
     realtimeSocket.on('screen:quality', (payload = {}) => {
       const targetPcName = String(payload.pc_name || '').trim().toUpperCase();
       const currentPcName = String(screenShareState.pcName || '').trim().toUpperCase();
       if (targetPcName && currentPcName && targetPcName !== currentPcName) return;
-      applyCaptureProfile(payload.mode || 'overview');
+      applyCaptureProfile(payload.mode || 'overview', payload.display_id || null);
     });
 
     realtimeSocket.on('disconnect', () => {
       applyCaptureProfile('overview');
+      serverCapabilities.student_screen_binary_v1 = false;
+      serverCapabilities.multi_monitor_v1 = false;
     });
 
     realtimeSocket.on('connect_error', async (err) => {
@@ -922,30 +965,69 @@ function postScreenshot() {
     thumbnailSize: { width: profile.width, height: profile.height },
   }).then((sources) => {
     if (!sources.length) return;
+    const monitors = getMonitorMetadata();
     const primaryDisplayId = String(screen.getPrimaryDisplay().id);
-    const selectedSource = sources.find((source) => String(source.display_id) === primaryDisplayId) || sources[0];
+    const requestedDisplayId = captureDisplayId || primaryDisplayId;
+    const selectedSource = sources.find((source) => String(source.display_id) === requestedDisplayId)
+      || sources.find((source) => String(source.display_id) === primaryDisplayId)
+      || sources[0];
     if (!selectedSource?.thumbnail || selectedSource.thumbnail.isEmpty()) return;
 
     const jpegBuf = selectedSource.thumbnail.toJPEG(profile.jpegQuality);
-    const b64     = jpegBuf.toString('base64');
-    const payload = {
-      pc_name:      screenShareState.pcName,
+    const thumbnailSize = selectedSource.thumbnail.getSize();
+    const displayId = String(selectedSource.display_id || requestedDisplayId);
+    const monitor = monitors.find((item) => item.display_id === displayId);
+    const binaryPayload = {
+      frame: jpegBuf,
+      mime: 'image/jpeg',
+      width: thumbnailSize.width,
+      height: thumbnailSize.height,
+      sequence: ++screenCaptureSequence,
+      captured_at: Date.now(),
+      display_id: displayId,
+      display_label: monitor?.label || selectedSource.name || 'Monitor',
+      monitors,
       student_name: screenShareState.studentName || null,
-      image:        `data:image/jpeg;base64,${b64}`,
     };
-    const body    = JSON.stringify(payload);
 
     if (realtimeSocket?.connected) {
-      realtimeSocket.emit('client:screen', payload);
+      if (serverCapabilities.student_screen_binary_v1) {
+        return new Promise((resolve) => {
+          let settled = false;
+          const finish = (ack = null) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            if (ack && !ack.success) {
+              logScreenWarning(`[SCREEN] Frame binary ditolak server: ${ack.message || ack.status || 'unknown'}`);
+            }
+            resolve();
+          };
+          const timeout = setTimeout(() => finish(), 1800);
+          realtimeSocket.emit('client:screen-v2', binaryPayload, finish);
+        });
+      }
+
+      realtimeSocket.emit('client:screen', {
+        pc_name: screenShareState.pcName,
+        student_name: screenShareState.studentName || null,
+        image: `data:image/jpeg;base64,${jpegBuf.toString('base64')}`,
+      });
       return;
     }
 
     try {
+      const payload = {
+        pc_name: screenShareState.pcName,
+        student_name: screenShareState.studentName || null,
+        image: `data:image/jpeg;base64,${jpegBuf.toString('base64')}`,
+      };
+      const body = JSON.stringify(payload);
       const parsed = new URL(`${screenShareState.serverUrl}/api/screens`);
       const headers = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) };
       const tok = getStoredClientToken();
       if (tok) headers.Authorization = `Bearer ${tok}`;
-      const req    = http.request({
+      const req = http.request({
         hostname: parsed.hostname,
         port:     parseInt(parsed.port) || 3001,
         path:     '/api/screens',
@@ -973,6 +1055,8 @@ function startScreenShare(serverUrl, studentName) {
   screenShareState.serverUrl = serverUrl;
   screenShareState.studentName = studentName || null;
   captureProfileMode = 'overview';
+  captureDisplayId = null;
+  screenCaptureSequence = 0;
   connectRealtime(serverUrl);
 
   restartScreenShareLoop();
@@ -991,6 +1075,7 @@ function stopScreenShare() {
   }
   screenCaptureInFlight = false;
   captureProfileMode = 'overview';
+  captureDisplayId = null;
 
   if (realtimeSocket?.connected) {
     realtimeSocket.emit('client:screen-stop', {
@@ -1144,6 +1229,12 @@ ipcMain.on('do-logout', () => {
 // ── IPC: Keluar aplikasi (setelah password kepala lab terverifikasi) ──
 ipcMain.on('quit-app', () => {
   requestControlledQuit('admin-verified-exit');
+});
+
+ipcMain.on('admin-exit-dialog-closed', () => {
+  const restoreMode = preAdminExitLayoutMode;
+  preAdminExitLayoutMode = null;
+  if (restoreMode && !attentionModeOn) applyWindowLayout(restoreMode);
 });
 
 // ── IPC: Verify server dari main process (bypass renderer fetch restriction) ──
@@ -1422,6 +1513,35 @@ ipcMain.handle('api-request', async (_event, url, options = {}) => {
   return result;
 
 });
+
+// Verifikasi password keluar admin selalu memakai server yang tersimpan di main process.
+// Renderer hanya mengirim password dan tidak dapat memilih/memalsukan target API.
+ipcMain.handle('verify-admin-exit-password', async (_event, password) => {
+  if (typeof password !== 'string' || !password || password.length > 256) {
+    return { ok: false, status: 400, data: { success: false, message: 'Password tidak valid.' } };
+  }
+
+  const configuredUrl = loadServerConfig().serverUrl;
+  if (!configuredUrl) {
+    return { ok: false, status: 503, data: { success: false, message: 'Server Admin belum dikonfigurasi.' } };
+  }
+
+  let parsed;
+  try {
+    parsed = new URL('/api/admin/verify-password', `${configuredUrl.replace(/\/$/, '')}/`);
+  } catch {
+    return { ok: false, status: 503, data: { success: false, message: 'Alamat Server Admin tidak valid.' } };
+  }
+
+  if (!isAllowedRendererApiUrl(parsed)) {
+    return { ok: false, status: 403, data: { success: false, message: 'Server Admin tersimpan tidak diizinkan.' } };
+  }
+
+  return performRendererApiRequest(parsed, {
+    method: 'POST',
+    body: JSON.stringify({ password }),
+  }, null);
+});
 app.whenReady().then(() => {
   // ── Daftarkan ke Windows Startup ─────────────────────────────
   // Agar app otomatis berjalan saat PC dinyalakan (kiosk mode)
@@ -1460,6 +1580,10 @@ app.whenReady().then(() => {
   // ── Shortcut keluar untuk Kepala Lab (Ctrl+Alt+Q) ───────────────
   globalShortcut.register('Ctrl+Alt+Q', () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
+      if (!attentionModeOn && currentLayoutMode !== 'login' && !preAdminExitLayoutMode) {
+        preAdminExitLayoutMode = currentLayoutMode;
+      }
+      if (currentLayoutMode !== 'login') applyWindowLayout('login');
       mainWindow.webContents.send('show-admin-dialog');
     }
   });

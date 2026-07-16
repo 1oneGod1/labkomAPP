@@ -50,4 +50,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // ── Verify emergency password tanpa expose plaintext ke renderer ──
   verifyEmergencyPassword: (pw) => ipcRenderer.invoke('verify-emergency-password', pw),
+
+  // Verifikasi password admin online memakai URL server tersimpan di main process.
+  verifyAdminExitPassword: (pw) => ipcRenderer.invoke('verify-admin-exit-password', pw),
+  closeAdminExitDialog: () => ipcRenderer.send('admin-exit-dialog-closed'),
 });

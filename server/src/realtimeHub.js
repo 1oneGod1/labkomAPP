@@ -5,31 +5,84 @@ const {
   normalizePcName,
   upsertClient,
   markClientDisconnected,
+  getClientRegistry,
 } = require('./services/clientRegistryService');
 const {
   upsertScreen,
+  toLegacyScreen,
   removeScreen,
   getActiveScreens,
 } = require('./services/screenRelayService');
 const firebaseService = require('./services/firebaseService');
+const { normalizeShowTargets, validateShowFrame } = require('./services/screenShareProtocol');
+const { normalizeDisplayId, validateStudentScreenFrame } = require('./services/studentScreenProtocol');
 
 const screenWatchers = new Map();
+let activeAdminShow = null;
+
+function isShowRecipient(clientSocket, targetSet) {
+  if (clientSocket.data.role !== 'client') return false;
+  const pcName = normalizePcName(clientSocket.data.pc_name || clientSocket.data.claimed_pc_name);
+  return Boolean(pcName && (!targetSet || targetSet.has(pcName)));
+}
+
+function getShowRecipients(io, targetSet) {
+  const recipients = [];
+  for (const [, candidate] of io.sockets.sockets) {
+    if (isShowRecipient(candidate, targetSet)) recipients.push(candidate);
+  }
+  return recipients;
+}
+
+function emitShowEvent(io, targetSet, eventName, payload, { volatile = false } = {}) {
+  const recipients = getShowRecipients(io, targetSet);
+  for (const recipient of recipients) {
+    if (volatile) recipient.volatile.emit(eventName, payload);
+    else recipient.emit(eventName, payload);
+  }
+  return recipients.length;
+}
+
+function buildShowMetadata(show) {
+  return {
+    session_id: show.session_id,
+    started_at: show.started_at,
+    source_label: show.source_label,
+    targets: show.targets ? Array.from(show.targets) : 'all',
+    profile: show.profile,
+    paused: Boolean(show.paused),
+  };
+}
+
+function startActiveShowForClient(socket) {
+  if (!activeAdminShow || !isShowRecipient(socket, activeAdminShow.targets)) return;
+  socket.emit('admin:screen-share-start', buildShowMetadata(activeAdminShow));
+}
 
 function getClientRoom(pcName) {
   const normalizedPcName = normalizePcName(pcName);
   return normalizedPcName ? `client:${normalizedPcName}` : null;
 }
 
-function updateWatcherCount(pcName, delta) {
+function setScreenWatcher(pcName, socketId, displayId = null) {
   const normalizedPcName = normalizePcName(pcName);
-  if (!normalizedPcName || !delta) return;
+  if (!normalizedPcName || !socketId) return;
 
-  const next = (screenWatchers.get(normalizedPcName) || 0) + delta;
-  if (next <= 0) {
+  const watchers = screenWatchers.get(normalizedPcName) || new Map();
+  watchers.delete(socketId);
+  watchers.set(socketId, normalizeDisplayId(displayId));
+  screenWatchers.set(normalizedPcName, watchers);
+}
+
+function removeScreenWatcher(pcName, socketId) {
+  const normalizedPcName = normalizePcName(pcName);
+  const watchers = screenWatchers.get(normalizedPcName);
+  if (!normalizedPcName || !watchers) return;
+
+  watchers.delete(socketId);
+  if (watchers.size === 0) {
     screenWatchers.delete(normalizedPcName);
-    return;
   }
-  screenWatchers.set(normalizedPcName, next);
 }
 
 function emitScreenQuality(io, pcName) {
@@ -37,11 +90,45 @@ function emitScreenQuality(io, pcName) {
   const room = getClientRoom(normalizedPcName);
   if (!normalizedPcName || !room) return;
 
-  const watcherCount = screenWatchers.get(normalizedPcName) || 0;
+  const watchers = screenWatchers.get(normalizedPcName);
+  const selectedDisplays = watchers ? Array.from(watchers.values()) : [];
   io.to(room).emit('screen:quality', {
     pc_name: normalizedPcName,
-    mode: watcherCount > 0 ? 'focus' : 'overview',
+    mode: selectedDisplays.length > 0 ? 'focus' : 'overview',
+    display_id: selectedDisplays.at(-1) || null,
   });
+}
+
+function emitStudentScreenToAdmins(io, screen) {
+  if (!screen) return 0;
+
+  const legacyScreen = toLegacyScreen(screen);
+  const binaryPacket = screen.frame?.length ? {
+    pc_name: screen.pc_name,
+    student_name: screen.student_name,
+    frame: screen.frame,
+    mime: screen.mime,
+    width: screen.width,
+    height: screen.height,
+    sequence: screen.sequence,
+    captured_at: screen.captured_at,
+    display_id: screen.display_id,
+    display_label: screen.display_label,
+    monitors: screen.monitors,
+    received_at: screen.updated_at,
+  } : null;
+
+  let count = 0;
+  for (const [, candidate] of io.sockets.sockets) {
+    if (candidate.data.role !== 'admin') continue;
+    if (binaryPacket && candidate.data.capabilities?.student_screen_binary_v1) {
+      candidate.volatile.emit('screen:update-v2', binaryPacket);
+    } else if (legacyScreen) {
+      candidate.volatile.emit('screen:update', legacyScreen);
+    }
+    count += 1;
+  }
+  return count;
 }
 
 function attachRealtimeHub(httpServer) {
@@ -72,6 +159,9 @@ function attachRealtimeHub(httpServer) {
         return next(new Error('unauthorized'));
       }
       socket.data.role = 'admin';
+      socket.data.capabilities = {
+        student_screen_binary_v1: Boolean(socket.handshake.auth?.capabilities?.student_screen_binary_v1),
+      };
       return next();
     }
 
@@ -92,27 +182,38 @@ function attachRealtimeHub(httpServer) {
     if (socket.data.role === 'admin') {
       socket.join('admins');
       socket.emit('screens:snapshot', getActiveScreens());
+      socket.emit('presence:snapshot', getClientRegistry().filter((entry) => entry.is_online));
+      socket.on('admin:presence-snapshot-request', () => {
+        socket.emit('presence:snapshot', getClientRegistry().filter((entry) => entry.is_online));
+      });
 
-      const setWatchTarget = (nextPcName = null) => {
+      const setWatchTarget = (nextPcName = null, nextDisplayId = null) => {
         const previousPcName = normalizePcName(socket.data.watch_pc_name);
         const normalizedNextPcName = normalizePcName(nextPcName);
-        if (previousPcName === normalizedNextPcName) return;
+        const normalizedNextDisplayId = normalizeDisplayId(nextDisplayId);
+        const previousDisplayId = normalizeDisplayId(socket.data.watch_display_id);
+        if (previousPcName === normalizedNextPcName && previousDisplayId === normalizedNextDisplayId) return;
+
+        const affectedPcs = new Set();
 
         if (previousPcName) {
-          updateWatcherCount(previousPcName, -1);
-          emitScreenQuality(io, previousPcName);
+          removeScreenWatcher(previousPcName, socket.id);
+          affectedPcs.add(previousPcName);
         }
 
         socket.data.watch_pc_name = normalizedNextPcName || null;
+        socket.data.watch_display_id = normalizedNextDisplayId;
 
         if (normalizedNextPcName) {
-          updateWatcherCount(normalizedNextPcName, 1);
-          emitScreenQuality(io, normalizedNextPcName);
+          setScreenWatcher(normalizedNextPcName, socket.id, normalizedNextDisplayId);
+          affectedPcs.add(normalizedNextPcName);
         }
+
+        for (const pcName of affectedPcs) emitScreenQuality(io, pcName);
       };
 
-      socket.on('admin:watch-screen', ({ pc_name } = {}) => {
-        setWatchTarget(pc_name || null);
+      socket.on('admin:watch-screen', ({ pc_name, display_id } = {}) => {
+        setWatchTarget(pc_name || null, display_id || null);
       });
 
       socket.on('admin:stop-watch-screen', () => {
@@ -149,34 +250,108 @@ function attachRealtimeHub(httpServer) {
       });
 
       // ── Admin Screen Share ─────────────────────────────────────
-      socket.on('admin:screen-share-start', () => {
-        // Notify all clients that admin started sharing
-        for (const [, s] of io.sockets.sockets) {
-          if (s.data.role !== 'admin') {
-            s.emit('admin:screen-share-start');
-          }
+      socket.on('admin:screen-share-start', (data = {}, callback) => {
+        if (activeAdminShow && activeAdminShow.owner_socket_id !== socket.id) {
+          callback?.({ success: false, status: 409, message: 'Admin lain sedang berbagi layar.' });
+          return;
         }
+
+        const targets = normalizeShowTargets(data.targets, normalizePcName);
+        if (targets && targets.size === 0) {
+          callback?.({ success: false, status: 400, message: 'Pilih minimal satu PC siswa.' });
+          return;
+        }
+
+        activeAdminShow = {
+          owner_socket_id: socket.id,
+          session_id: `show_${Date.now()}_${socket.id.slice(0, 6)}`,
+          targets,
+          started_at: Date.now(),
+          source_label: String(data.source_label || 'Layar Instruktur').slice(0, 120),
+          profile: String(data.profile || 'balanced').slice(0, 24),
+          paused: false,
+        };
+        socket.data.admin_screen_share_active = true;
+
+        const metadata = buildShowMetadata(activeAdminShow);
+        const count = emitShowEvent(io, targets, 'admin:screen-share-start', metadata);
+        callback?.({ success: true, count, session_id: activeAdminShow.session_id });
       });
 
+      // Kompatibilitas Admin lama yang masih mengirim data-URI base64.
       socket.on('admin:screen-share-frame', (data = {}) => {
-        if (!data.image) return;
-        // Relay frame to all clients
-        for (const [, s] of io.sockets.sockets) {
-          if (s.data.role !== 'admin') {
-            s.emit('admin:screen-share-frame', { image: data.image });
-          }
-        }
+        if (!data.image || !activeAdminShow || activeAdminShow.owner_socket_id !== socket.id || activeAdminShow.paused) return;
+        emitShowEvent(io, activeAdminShow.targets, 'admin:screen-share-frame', {
+          image: data.image,
+          session_id: activeAdminShow.session_id,
+        }, { volatile: true });
       });
 
-      socket.on('admin:screen-share-stop', () => {
-        // Notify all clients that admin stopped sharing
-        for (const [, s] of io.sockets.sockets) {
-          if (s.data.role !== 'admin') {
-            s.emit('admin:screen-share-stop');
+      // Transport v2: frame biner, backpressure melalui acknowledgement, dan fallback client lama.
+      socket.on('admin:screen-share-frame-v2', (data = {}, callback) => {
+        if (!activeAdminShow || activeAdminShow.owner_socket_id !== socket.id) {
+          callback?.({ success: false, status: 409, message: 'Sesi berbagi belum aktif.' });
+          return;
+        }
+        if (activeAdminShow.paused) {
+          callback?.({ success: true, count: 0, paused: true, received_at: Date.now() });
+          return;
+        }
+
+        const validated = validateShowFrame(data);
+        if (!validated.ok) {
+          callback?.({ success: false, status: validated.status, message: validated.message });
+          return;
+        }
+
+        const packet = {
+          ...validated.packet,
+          session_id: activeAdminShow.session_id,
+        };
+        const { frame, mime } = packet;
+        const recipients = getShowRecipients(io, activeAdminShow.targets);
+        let fallbackImage = null;
+
+        for (const recipient of recipients) {
+          if (recipient.data.capabilities?.admin_screen_binary_v1) {
+            recipient.volatile.emit('admin:screen-share-frame-v2', packet);
+          } else {
+            fallbackImage ||= `data:${mime};base64,${frame.toString('base64')}`;
+            recipient.volatile.emit('admin:screen-share-frame', {
+              image: fallbackImage,
+              session_id: activeAdminShow.session_id,
+            });
           }
         }
+
+        callback?.({ success: true, count: recipients.length, received_at: Date.now() });
       });
 
+      socket.on('admin:screen-share-pause', ({ paused } = {}, callback) => {
+        if (!activeAdminShow || activeAdminShow.owner_socket_id !== socket.id) {
+          callback?.({ success: false, status: 409, message: 'Sesi berbagi belum aktif.' });
+          return;
+        }
+        activeAdminShow.paused = Boolean(paused);
+        const count = emitShowEvent(io, activeAdminShow.targets, 'admin:screen-share-pause', {
+          session_id: activeAdminShow.session_id,
+          paused: activeAdminShow.paused,
+        });
+        callback?.({ success: true, count, paused: activeAdminShow.paused });
+      });
+
+      socket.on('admin:screen-share-stop', (callback) => {
+        if (!activeAdminShow || activeAdminShow.owner_socket_id !== socket.id) {
+          callback?.({ success: true, count: 0 });
+          return;
+        }
+        const count = emitShowEvent(io, activeAdminShow.targets, 'admin:screen-share-stop', {
+          session_id: activeAdminShow.session_id,
+        });
+        activeAdminShow = null;
+        socket.data.admin_screen_share_active = false;
+        callback?.({ success: true, count });
+      });
       // ── Attention Mode (Blank Screen) ──────────────────────────
       socket.on('admin:attention-mode', ({ enabled, message, target } = {}) => {
         const payload = {
@@ -206,10 +381,18 @@ function attachRealtimeHub(httpServer) {
 
       socket.on('disconnect', () => {
         setWatchTarget(null);
+        if (activeAdminShow?.owner_socket_id === socket.id) {
+          emitShowEvent(io, activeAdminShow.targets, 'admin:screen-share-stop', {
+            session_id: activeAdminShow.session_id,
+          });
+          activeAdminShow = null;
+        }
       });
 
       return;
     }
+
+    socket.join('clients');
 
     const bindClientRoom = (pcName) => {
       const normalizedPcName = normalizePcName(pcName);
@@ -228,6 +411,14 @@ function attachRealtimeHub(httpServer) {
     };
 
     function updatePresence(payload = {}, source = 'socket') {
+      if (payload.capabilities && typeof payload.capabilities === 'object') {
+        socket.data.capabilities = {
+          admin_screen_binary_v1: Boolean(payload.capabilities.admin_screen_binary_v1),
+          student_screen_binary_v1: Boolean(payload.capabilities.student_screen_binary_v1),
+          multi_monitor_v1: Boolean(payload.capabilities.multi_monitor_v1),
+        };
+      }
+
       const entry = upsertClient({
         pc_name: socket.data.claimed_pc_name,
         mac: payload.mac,
@@ -250,7 +441,12 @@ function attachRealtimeHub(httpServer) {
       return entry;
     }
 
+    socket.emit('server:capabilities', {
+      student_screen_binary_v1: true,
+      multi_monitor_v1: true,
+    });
     bindClientRoom(socket.data.claimed_pc_name);
+    startActiveShowForClient(socket);
 
     socket.on('client:hello', (payload = {}) => {
       updatePresence(payload, 'socket-hello');
@@ -270,9 +466,34 @@ function attachRealtimeHub(httpServer) {
         image: payload.image,
         student_name: payload.student_name || null,
       });
-      if (screen) {
-        io.to('admins').emit('screen:update', screen);
+      if (screen) emitStudentScreenToAdmins(io, screen);
+    });
+
+    socket.on('client:screen-v2', (payload = {}, callback) => {
+      const pcName = normalizePcName(socket.data.claimed_pc_name);
+      if (!pcName) {
+        callback?.({ success: false, status: 401, message: 'Identitas PC tidak valid.' });
+        return;
       }
+
+      const validated = validateStudentScreenFrame(payload);
+      if (!validated.ok) {
+        callback?.({ success: false, status: validated.status, message: validated.message });
+        return;
+      }
+
+      updatePresence({ student_name: validated.packet.student_name }, 'socket-screen-v2');
+      const screen = upsertScreen({
+        pc_name: pcName,
+        ...validated.packet,
+      });
+      const count = emitStudentScreenToAdmins(io, screen);
+      callback?.({
+        success: true,
+        count,
+        sequence: validated.packet.sequence,
+        received_at: Date.now(),
+      });
     });
 
     socket.on('client:screen-stop', (payload = {}) => {

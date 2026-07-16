@@ -27,8 +27,10 @@ jobs:
         run: find server/src server/scripts -name '*.js' -print0 | xargs -0 -n1 node --check
       - name: Test backend
         run: npm test --prefix server
-      - name: Test client lock packaging
+      - name: Test client contracts
         run: npm test --prefix client
+      - name: Test admin media contract
+        run: npm test --prefix admin
       - name: Build client
         run: npm run build:react --prefix client
       - name: Build admin

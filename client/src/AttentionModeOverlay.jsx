@@ -11,7 +11,7 @@ import { AlertCircle, Eye, EyeOff } from 'lucide-react';
  * - Tampilkan pesan dari admin
  * - Tidak bisa ditutup sampai admin menonaktifkan
  */
-export default function AttentionModeOverlay({ enabled, message, onAcknowledge }) {
+export default function AttentionModeOverlay({ enabled, message, onAcknowledge, allowAdminInteraction = false }) {
   const [localEnabled, setLocalEnabled] = useState(enabled);
   const [fadeOut, setFadeOut] = useState(false);
 
@@ -38,7 +38,7 @@ export default function AttentionModeOverlay({ enabled, message, onAcknowledge }
   }, [localEnabled]);
 
   useEffect(() => {
-    if (!localEnabled) return;
+    if (!localEnabled || allowAdminInteraction) return;
 
     // Block keyboard events
     const blockKeyboard = (e) => {
@@ -86,7 +86,7 @@ export default function AttentionModeOverlay({ enabled, message, onAcknowledge }
       document.removeEventListener('click', blockMouse, true);
       document.removeEventListener('dblclick', blockMouse, true);
     };
-  }, [localEnabled]);
+  }, [localEnabled, allowAdminInteraction]);
 
   if (!localEnabled) return null;
 

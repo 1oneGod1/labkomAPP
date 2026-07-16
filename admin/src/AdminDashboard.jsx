@@ -23,6 +23,19 @@ const API = (typeof window !== 'undefined' && window.location.protocol === 'file
   : '';  // dev mode: Vite proxy arahkan /api → localhost:3001
 const REALTIME_API = API || 'http://localhost:3001';
 
+function screenFrameToBlob(frame, mime = 'image/jpeg') {
+  if (!frame) return null;
+  if (frame instanceof Blob) return frame;
+  if (frame instanceof ArrayBuffer) return new Blob([frame], { type: mime });
+  if (ArrayBuffer.isView(frame)) {
+    return new Blob([frame.buffer.slice(frame.byteOffset, frame.byteOffset + frame.byteLength)], { type: mime });
+  }
+  if (frame.type === 'Buffer' && Array.isArray(frame.data)) {
+    return new Blob([new Uint8Array(frame.data)], { type: mime });
+  }
+  return null;
+}
+
 // ─── Banner IP Server (tampil di header) ──────────────────────────────────
 function ServerInfoBanner({ info }) {
   const [copied, setCopied] = useState(false);
@@ -327,9 +340,26 @@ export default function AdminDashboard() {
   const [screens, setScreens]           = useState([]);
   const [screensLoading, setScreensLoading] = useState(false);
   const [focusedScreen, setFocusedScreen]   = useState(null); // pc_name for fullscreen modal
+  const [focusedDisplayId, setFocusedDisplayId] = useState(null);
   const realtimeSocketRef = useRef(null);
   const focusedScreenRef = useRef(null);
+  const focusedDisplayRef = useRef(null);
   const screensRequestRef = useRef(null);
+  const screenObjectUrlsRef = useRef(new Map());
+
+  const revokeScreenObjectUrl = useCallback((pcName) => {
+    const currentUrl = screenObjectUrlsRef.current.get(pcName);
+    if (!currentUrl) return;
+    URL.revokeObjectURL(currentUrl);
+    screenObjectUrlsRef.current.delete(pcName);
+  }, []);
+
+  const releaseAllScreenObjectUrls = useCallback(() => {
+    for (const url of screenObjectUrlsRef.current.values()) {
+      URL.revokeObjectURL(url);
+    }
+    screenObjectUrlsRef.current.clear();
+  }, []);
 
   const fetchScreens = useCallback(async (silent = false) => {
     if (!silent) setScreensLoading(true);
@@ -349,7 +379,10 @@ export default function AdminDashboard() {
         setAuthReady(false);
       }
       const data = await res.json();
-      if (data.success) setScreens(data.data || []);
+      if (data.success) {
+        releaseAllScreenObjectUrls();
+        setScreens(data.data || []);
+      }
     } catch (err) {
       if (err?.name !== 'AbortError') {
         console.warn('fetchScreens failed:', err);
@@ -360,7 +393,7 @@ export default function AdminDashboard() {
       }
       if (!silent) setScreensLoading(false);
     }
-  }, []);
+  }, [releaseAllScreenObjectUrls]);
 
   useEffect(() => {
     if (activeTab === 'screens') {
@@ -373,11 +406,13 @@ export default function AdminDashboard() {
 
   useEffect(() => {
     focusedScreenRef.current = focusedScreen;
-  }, [focusedScreen]);
+    focusedDisplayRef.current = focusedDisplayId;
+  }, [focusedScreen, focusedDisplayId]);
 
   useEffect(() => {
     if (activeTab !== 'screens') {
       setFocusedScreen(null);
+      setFocusedDisplayId(null);
     }
   }, [activeTab]);
 
@@ -477,6 +512,9 @@ export default function AdminDashboard() {
       auth: {
         role: 'admin',
         token,
+        capabilities: {
+          student_screen_binary_v1: true,
+        },
       },
     });
 
@@ -484,16 +522,21 @@ export default function AdminDashboard() {
 
     socket.on('connect', () => {
       if (focusedScreenRef.current) {
-        socket.emit('admin:watch-screen', { pc_name: focusedScreenRef.current });
+        socket.emit('admin:watch-screen', {
+          pc_name: focusedScreenRef.current,
+          display_id: focusedDisplayRef.current,
+        });
       }
     });
 
     socket.on('screens:snapshot', (data = []) => {
+      releaseAllScreenObjectUrls();
       setScreens(Array.isArray(data) ? data : []);
     });
 
     socket.on('screen:update', (screen) => {
       if (!screen?.pc_name) return;
+      revokeScreenObjectUrl(screen.pc_name);
       setScreens((prev) => {
         const next = prev.filter((item) => item.pc_name !== screen.pc_name);
         next.push(screen);
@@ -502,10 +545,42 @@ export default function AdminDashboard() {
       });
     });
 
+    socket.on('screen:update-v2', (screen) => {
+      if (!screen?.pc_name) return;
+      const blob = screenFrameToBlob(screen.frame, screen.mime);
+      if (!blob) return;
+
+      const nextUrl = URL.createObjectURL(blob);
+      const previousUrl = screenObjectUrlsRef.current.get(screen.pc_name);
+      screenObjectUrlsRef.current.set(screen.pc_name, nextUrl);
+      if (previousUrl) {
+        setTimeout(() => URL.revokeObjectURL(previousUrl), 250);
+      }
+
+      const now = Date.now();
+      const nextScreen = {
+        ...screen,
+        image: nextUrl,
+        transport: 'binary',
+        latency: Math.max(0, now - (Number(screen.captured_at) || now)),
+        updated_at: Number(screen.received_at) || now,
+      };
+      delete nextScreen.frame;
+
+      setScreens((prev) => {
+        const next = prev.filter((item) => item.pc_name !== screen.pc_name);
+        next.push(nextScreen);
+        next.sort((a, b) => a.pc_name.localeCompare(b.pc_name));
+        return next;
+      });
+    });
+
     socket.on('screen:remove', ({ pc_name } = {}) => {
       if (!pc_name) return;
+      revokeScreenObjectUrl(pc_name);
       setScreens((prev) => prev.filter((item) => item.pc_name !== pc_name));
       setFocusedScreen((prev) => (prev === pc_name ? null : prev));
+      if (focusedScreenRef.current === pc_name) setFocusedDisplayId(null);
     });
 
     socket.on('presence:update', () => {
@@ -528,18 +603,22 @@ export default function AdminDashboard() {
       }
       socket.emit('admin:stop-watch-screen');
       socket.disconnect();
+      releaseAllScreenObjectUrls();
       if (realtimeSocketRef.current === socket) {
         realtimeSocketRef.current = null;
       }
     };
-  }, [authReady, fetchPcs, refreshClientMacs]);
+  }, [authReady, fetchPcs, refreshClientMacs, releaseAllScreenObjectUrls, revokeScreenObjectUrl]);
 
   useEffect(() => {
     const socket = realtimeSocketRef.current;
     if (!socket) return undefined;
 
     if (focusedScreen) {
-      socket.emit('admin:watch-screen', { pc_name: focusedScreen });
+      socket.emit('admin:watch-screen', {
+        pc_name: focusedScreen,
+        display_id: focusedDisplayId,
+      });
     } else {
       socket.emit('admin:stop-watch-screen');
     }
@@ -548,7 +627,7 @@ export default function AdminDashboard() {
       if (!focusedScreen) return;
       socket.emit('admin:stop-watch-screen');
     };
-  }, [focusedScreen]);
+  }, [focusedScreen, focusedDisplayId]);
 
   const handleKillAll = async (permanent) => {
     setRemoteBusy(true);
@@ -1038,6 +1117,15 @@ export default function AdminDashboard() {
   // ═══════════════════════════════════════════════════════════════════════
   const renderScreens = () => {
     const focusedData = focusedScreen ? screens.find(s => s.pc_name === focusedScreen) : null;
+    const focusedMonitors = Array.isArray(focusedData?.monitors) ? focusedData.monitors : [];
+    const closeFocusedScreen = () => {
+      setFocusedScreen(null);
+      setFocusedDisplayId(null);
+    };
+    const openFocusedScreen = (screenData) => {
+      setFocusedScreen(screenData.pc_name);
+      setFocusedDisplayId(screenData.display_id || screenData.monitors?.find((monitor) => monitor.primary)?.display_id || null);
+    };
     return (
       <div>
         <div className="flex items-center justify-between mb-6">
@@ -1074,7 +1162,7 @@ export default function AdminDashboard() {
               <div
                 key={s.pc_name}
                 className="group bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden cursor-pointer hover:shadow-lg hover:border-blue-300 transition-all"
-                onClick={() => setFocusedScreen(s.pc_name)}
+                onClick={() => openFocusedScreen(s)}
               >
                 <div className="relative bg-slate-950 aspect-video overflow-hidden">
                   <img
@@ -1090,7 +1178,11 @@ export default function AdminDashboard() {
                 <div className="p-3">
                   <div className="flex items-center justify-between gap-2">
                     <p className="font-bold text-slate-800 text-sm truncate">{s.pc_name}</p>
-                    <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Grid</span>
+                    <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                      {Array.isArray(s.monitors) && s.monitors.length > 1
+                        ? `${s.monitors.length} Monitor`
+                        : (s.transport === 'binary' ? 'Binary' : 'Grid')}
+                    </span>
                   </div>
                   {s.student_name && (
                     <p className="text-xs text-blue-600 truncate mt-0.5">{s.student_name}</p>
@@ -1105,7 +1197,7 @@ export default function AdminDashboard() {
         {focusedData && (
           <div
             className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-sm flex flex-col items-center justify-center p-4 animate-in fade-in"
-            onClick={() => setFocusedScreen(null)}
+            onClick={closeFocusedScreen}
           >
             <div
               className="w-full max-w-5xl bg-slate-900 rounded-2xl overflow-hidden shadow-2xl animate-in zoom-in-95 duration-300"
@@ -1127,13 +1219,36 @@ export default function AdminDashboard() {
                   <span className="px-2.5 py-1 rounded-full bg-blue-500/15 text-blue-300 text-[11px] font-semibold uppercase tracking-wide">
                     Focus HQ
                   </span>
+                  {focusedData.transport === 'binary' && (
+                    <span className="px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-300 text-[11px] font-semibold uppercase tracking-wide">
+                      Binary · {focusedData.width || 0}×{focusedData.height || 0} · {focusedData.latency || 0} ms
+                    </span>
+                  )}
                 </div>
-                <button
-                  onClick={() => setFocusedScreen(null)}
-                  className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-700 transition-colors"
-                >
-                  <X className="w-5 h-5" />
-                </button>
+                <div className="flex items-center gap-3">
+                  {focusedMonitors.length > 1 && (
+                    <label className="flex items-center gap-2 text-xs text-slate-300">
+                      <span>Monitor</span>
+                      <select
+                        value={focusedDisplayId || focusedData.display_id || ''}
+                        onChange={(event) => setFocusedDisplayId(event.target.value || null)}
+                        className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-1.5 text-white outline-none focus:border-blue-400"
+                      >
+                        {focusedMonitors.map((monitor) => (
+                          <option key={monitor.display_id} value={monitor.display_id}>
+                            {monitor.label} · {monitor.width}×{monitor.height}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                  <button
+                    onClick={closeFocusedScreen}
+                    className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-700 transition-colors"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
               </div>
               <img
                 src={focusedData.image}

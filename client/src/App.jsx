@@ -54,6 +54,11 @@ export default function App() {
     window.electronAPI?.saveServerUrl?.(normalized);
   }, []);
 
+  const closeAdminDialog = useCallback(() => {
+    setShowAdminDialog(false);
+    window.electronAPI?.closeAdminExitDialog?.();
+  }, []);
+
   // ── Load konfigurasi server URL dari Electron userData ──────────
   useEffect(() => {
     async function loadConfig() {
@@ -512,10 +517,14 @@ export default function App() {
   // ── Overlays shared across all post-setup modes ──────────────────
   const sharedOverlays = (
     <>
+      {showAdminDialog && (
+        <AdminExitDialog onClose={closeAdminDialog} />
+      )}
       <AdminScreenShare socket={socketRef.current} />
       <AttentionModeOverlay
         enabled={attentionMode.enabled}
         message={attentionMode.message}
+        allowAdminInteraction={showAdminDialog}
         onAcknowledge={() => socketRef.current?.emit('client:attention-ack', {})}
       />
     </>
@@ -602,10 +611,6 @@ export default function App() {
 
       <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4 relative overflow-hidden font-sans">
 
-        {/* Dialog Admin (overlay di atas semua) */}
-        {showAdminDialog && (
-          <AdminExitDialog onClose={() => setShowAdminDialog(false)} />
-        )}
 
       {/* Tombol tersembunyi pojok kiri bawah — klik 5x untuk buka dialog admin */}
       <button

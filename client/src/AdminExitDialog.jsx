@@ -1,8 +1,5 @@
 ﻿import React, { useState, useEffect, useRef } from 'react';
 import { ShieldCheck, X, Eye, EyeOff, LogOut, AlertCircle } from 'lucide-react';
-import { apiCall } from './api.js';
-
-const SERVER_URL = sessionStorage.getItem('server_url') || 'http://localhost:3001';
 
 /**
  * Dialog untuk Kepala Lab agar bisa keluar dari aplikasi kiosk.
@@ -25,15 +22,7 @@ export default function AdminExitDialog({ onClose }) {
     return () => window.removeEventListener('keydown', handler);
   }, [onClose]);
 
-  const doExit = async () => {
-    const sessionId = sessionStorage.getItem('session_id');
-    if (sessionId) {
-      await apiCall(`${SERVER_URL}/api/auth/logout`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId }),
-      }).catch(() => {});
-    }
+  const doExit = () => {
     window.electronAPI?.quitApp();
   };
 
@@ -47,20 +36,21 @@ export default function AdminExitDialog({ onClose }) {
     // Cek password lokal (verifikasi di main process; plaintext tidak ada di bundle)
     const isLocalMatch = await window.electronAPI?.verifyEmergencyPassword?.(password);
     if (isLocalMatch) {
-      await doExit();
+      doExit();
       return;
     }
 
-    // Jika bukan password lokal, coba verifikasi ke server
+    // Jika bukan password lokal, main process memverifikasi ke server tersimpan.
+    // Renderer tidak memilih target URL sehingga konfigurasi LAN yang aktif selalu dipakai.
     try {
-      const result = await apiCall(`${SERVER_URL}/api/admin/verify-password`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password }),
-      });
+      const result = await window.electronAPI?.verifyAdminExitPassword?.(password);
 
-      if (result.ok && result.data?.success) {
-        await doExit();
+      if (result?.ok && result.data?.success) {
+        doExit();
+      } else if (!result || result.status === 0) {
+        setError('Server tidak dapat dijangkau. Gunakan password emergency yang dikonfigurasi pada PC ini.');
+        setPassword('');
+        inputRef.current?.focus();
       } else {
         setError(result.data?.message || 'Password salah.');
         setPassword('');
@@ -76,7 +66,7 @@ export default function AdminExitDialog({ onClose }) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+    <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/70 backdrop-blur-sm">
       <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-sm mx-4 overflow-hidden">
         <div className="bg-gradient-to-r from-slate-800 to-slate-700 px-6 py-4 flex items-center justify-between border-b border-slate-700">
           <div className="flex items-center space-x-3">

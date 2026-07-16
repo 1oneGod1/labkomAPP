@@ -2,6 +2,7 @@ const path = require('path');
 require('dotenv').config({
   path: process.env.LABKOM_ENV_PATH || path.resolve(__dirname, '..', '.env'),
 });
+const { version: APP_VERSION } = require('../package.json');
 const express = require('express');
 const cors    = require('cors');
 const os      = require('os');
@@ -68,7 +69,7 @@ app.use((req, _res, next) => {
 // Routes
 // =====================
 app.get('/', (_req, res) => {
-  res.json({ message: 'Labkom Server berjalan!', version: '1.0.0' });
+  res.json({ message: 'Labkom Server berjalan!', version: APP_VERSION });
 });
 
 app.use('/api/auth',       authRoutes);
