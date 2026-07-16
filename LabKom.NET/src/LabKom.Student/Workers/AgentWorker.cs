@@ -1,3 +1,4 @@
+using LabKom.Shared.Discovery;
 using LabKom.Student.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;

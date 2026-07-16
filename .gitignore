@@ -17,6 +17,9 @@ tmp/
 .env
 .env.local
 .env.*.local
+appsettings.Local.json
+*.pfx
+*.snk
 
 # Logs
 *.log

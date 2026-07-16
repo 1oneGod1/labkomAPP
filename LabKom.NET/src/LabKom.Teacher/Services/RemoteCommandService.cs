@@ -5,19 +5,18 @@ using Microsoft.AspNetCore.SignalR;
 
 namespace LabKom.Teacher.Services;
 
-/// <summary>
-/// Membantu UI Teacher mengirim perintah ke satu PC tertentu atau semua PC
-/// melalui SignalR Hub. Pakai group-per-PC yang dibuat saat OnConnectedAsync.
-/// </summary>
-public class RemoteCommandService
+/// <summary>Routes each command only to the process role that can execute it.</summary>
+public sealed class RemoteCommandService
 {
     private readonly HubContextHolder _holder;
-    private readonly PresenceRegistry _registry;
+    private readonly AttentionStateStore _attentionState;
 
-    public RemoteCommandService(HubContextHolder holder, PresenceRegistry registry)
+    public RemoteCommandService(
+        HubContextHolder holder,
+        AttentionStateStore attentionState)
     {
         _holder = holder;
-        _registry = registry;
+        _attentionState = attentionState;
     }
 
     private IHubContext<TeacherHub> Hub =>
@@ -27,7 +26,7 @@ public class RemoteCommandService
         SendAttention(pcName, enabled: true, message);
 
     public Task UnlockAsync(string? pcName) =>
-        SendAttention(pcName, enabled: false, message: "");
+        SendAttention(pcName, enabled: false, message: string.Empty);
 
     public Task ShutdownAsync(string? pcName, int delaySeconds = 0) =>
         SendPower(pcName, PowerCommand.Shutdown(delaySeconds, "Diperintahkan oleh guru"));
@@ -35,43 +34,60 @@ public class RemoteCommandService
     public Task RestartAsync(string? pcName, int delaySeconds = 0) =>
         SendPower(pcName, PowerCommand.Restart(delaySeconds, "Diperintahkan oleh guru"));
 
-    public Task SetCaptureProfileAsync(string pcName, CaptureProfile profile)
+    public Task SetCaptureProfileAsync(
+        string pcName,
+        CaptureProfile profile,
+        string? monitorId = null)
     {
-        var group = TeacherHub.GroupForPc(pcName);
-        return Hub.Clients.Group(group)
-            .SendAsync(HubRoutes.Methods.ReceiveCaptureProfile, new CaptureProfileCommand(profile));
+        var command = new CaptureProfileCommand(profile, monitorId);
+        if (!ContractValidation.IsValidCaptureProfileCommand(command))
+        {
+            throw new ArgumentException("Capture profile atau monitor tidak valid.", nameof(monitorId));
+        }
+
+        return Hub.Clients
+            .Group(HubRoutes.Groups.ForPcRole(pcName, HubRoutes.Roles.Desktop))
+            .SendAsync(HubRoutes.Methods.ReceiveCaptureProfile, command);
     }
 
     public Task BroadcastChatAsync(string body, string from = "Guru")
     {
-        var msg = new ChatMessage(
+        var message = new ChatMessage(
             Guid.NewGuid().ToString("N"),
             ChatDirection.Broadcast,
             from,
             null,
-            body,
+            body?.Trim() ?? string.Empty,
             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-        return Hub.Clients.All.SendAsync(HubRoutes.Methods.ReceiveChat, msg);
+        if (!ContractValidation.IsValidChat(message))
+        {
+            throw new ArgumentException("Pesan chat tidak valid.", nameof(body));
+        }
+
+        return Hub.Clients
+            .Group(HubRoutes.Groups.ForRole(HubRoutes.Roles.Desktop))
+            .SendAsync(HubRoutes.Methods.ReceiveChat, message);
     }
 
     private Task SendAttention(string? pcName, bool enabled, string message)
     {
-        var cmd = AttentionCommand.For(pcName, enabled, message);
-        if (string.IsNullOrEmpty(pcName))
-        {
-            return Hub.Clients.All.SendAsync(HubRoutes.Methods.ReceiveAttention, cmd);
-        }
-        return Hub.Clients.Group(TeacherHub.GroupForPc(pcName))
-            .SendAsync(HubRoutes.Methods.ReceiveAttention, cmd);
+        var command = AttentionCommand.For(pcName, enabled, message);
+        _attentionState.Apply(command);
+        var group = string.IsNullOrWhiteSpace(pcName)
+            ? HubRoutes.Groups.ForRole(HubRoutes.Roles.Desktop)
+            : HubRoutes.Groups.ForPcRole(pcName, HubRoutes.Roles.Desktop);
+
+        return Hub.Clients.Group(group)
+            .SendAsync(HubRoutes.Methods.ReceiveAttention, command);
     }
 
     private Task SendPower(string? pcName, PowerCommand command)
     {
-        if (string.IsNullOrEmpty(pcName))
-        {
-            return Hub.Clients.All.SendAsync(HubRoutes.Methods.ReceivePowerCommand, command);
-        }
-        return Hub.Clients.Group(TeacherHub.GroupForPc(pcName))
+        var group = string.IsNullOrWhiteSpace(pcName)
+            ? HubRoutes.Groups.ForRole(HubRoutes.Roles.Agent)
+            : HubRoutes.Groups.ForPcRole(pcName, HubRoutes.Roles.Agent);
+
+        return Hub.Clients.Group(group)
             .SendAsync(HubRoutes.Methods.ReceivePowerCommand, command);
     }
 }

@@ -5,7 +5,6 @@ using System.Net;
 using System.Security.Cryptography;
 using LabKom.Shared.Contracts;
 using LabKom.Shared.Hub;
-using LabKom.Teacher.Hub;
 using Microsoft.Extensions.Configuration;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
@@ -57,7 +56,7 @@ public class FileDistributionService
 
         var sha = await ComputeSha256Async(destPath);
         var size = new FileInfo(destPath).Length;
-        var url = $"http://{GetLanIp()}:{_hubPort}/files/{noticeId}/{Uri.EscapeDataString(fileName)}";
+        var url = $"https://{GetLanIp()}:{_hubPort}/files/{noticeId}/{Uri.EscapeDataString(fileName)}";
 
         var notice = new FileDistributionNotice(
             noticeId, fileName, size, sha, url, targetPcName,
@@ -75,10 +74,12 @@ public class FileDistributionService
         if (hub is null) return Task.CompletedTask;
         if (string.IsNullOrEmpty(notice.TargetPcName))
         {
-            return hub.Clients.All.SendAsync(HubRoutes.Methods.ReceiveFileNotice, notice);
+            return hub.Clients
+                .Group(HubRoutes.Groups.ForRole(HubRoutes.Roles.Desktop))
+                .SendAsync(HubRoutes.Methods.ReceiveFileNotice, notice);
         }
         return hub.Clients
-            .Group(TeacherHub.GroupForPc(notice.TargetPcName))
+            .Group(HubRoutes.Groups.ForPcRole(notice.TargetPcName, HubRoutes.Roles.Desktop))
             .SendAsync(HubRoutes.Methods.ReceiveFileNotice, notice);
     }
 

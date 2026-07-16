@@ -1,73 +1,77 @@
-# LabKom Architecture Rewrite Plan
+# Rencana Migrasi Native LabKom
 
-Tujuan rewrite ini adalah membuat aplikasi lebih mudah dirawat tanpa memutus workflow lab yang sudah jalan. Pendekatannya incremental: setiap tahap harus tetap bisa build dan bisa dipakai.
+## Tujuan
 
-## Prinsip
+LabKom dipindahkan dari Electron/Node ke aplikasi Windows native .NET 8 secara clean-room. Tidak ada klaim "tanpa bug" hanya karena build berhasil; sebuah fitur dianggap selesai setelah validasi, security, targeting, recovery, tes, dan uji Windows nyata terpenuhi.
 
-- Backend menjadi sumber kontrak data utama.
-- Client hanya boleh logout sesi miliknya sendiri.
-- Operasi admin harus selalu lewat token admin.
-- Realtime event dipisah berdasarkan domain: presence, screen, chat, activity, control.
-- Electron main process bertugas untuk OS integration, bukan business logic UI.
-- React component besar dipecah berdasarkan feature.
+## Batas proses
 
-## Tahap 1: Stabilkan Fondasi
+- LabKom.Teacher: Teacher Console WPF, HTTPS/SignalR host, discovery, SQLite, monitoring, dan orkestrasi.
+- LabKom.Student.Agent: Windows Service untuk power dan policy privileged.
+- LabKom.Student.Desktop: proses sesi pengguna untuk capture, aktivitas, lock, broadcast, chat, dan file.
+- LabKom.Shared: contract, validation, identity, routing, discovery, dan certificate pinning.
+- LabKom.Data: persistence lokal Teacher.
 
-- Pastikan `client` dan `admin` build sukses.
-- Samakan kontrak login: `student_id`, `session_id`, `pc_name`, `nama_lengkap`.
-- Kirim activity monitoring dengan metadata sesi yang benar.
-- Pastikan IPC admin membawa token saat memanggil endpoint protected.
-- Hapus pemanggilan admin-only endpoint dari client.
+Windows Service tidak menangkap layar atau menulis ke Documents siswa karena berjalan di Session 0.
 
-## Tahap 2: Backend Contract Layer
+## Security baseline
 
-- Tambah modul contract/validator untuk payload HTTP dan socket.
-- Buat response shape konsisten: `{ success, message, data, error }`.
-- Pisahkan realtime handler menjadi file:
-  - `realtime/presenceHub.js`
-  - `realtime/screenHub.js`
-  - `realtime/chatHub.js`
-  - `realtime/activityHub.js`
-  - `realtime/controlHub.js`
-- Tambah client identity token ringan untuk endpoint client yang sengaja terbuka.
+- Shared secret minimal 32 karakter dan tidak dikirim melalui query string.
+- SignalR dan file transfer melalui HTTPS.
+- Student memverifikasi sertifikat Teacher menggunakan pin dari beacon HMAC.
+- Beacon membawa timestamp dan ditolak ketika stale/tampered.
+- Koneksi dipisahkan menjadi role:agent, role:desktop, pc:<name>:agent, dan pc:<name>:desktop.
+- Frame, activity, chat, file progress, PC name, serta monitor inventory dibatasi.
+- Endpoint URL dan certificate pin dibaca melalui satu snapshot atomik.
 
-## Tahap 3: Admin App Feature Split
+## P0 - Fondasi native
 
-- Pecah `AdminDashboard.jsx` menjadi shell dan feature modules:
-  - `features/auth`
-  - `features/monitoring`
-  - `features/screens`
-  - `features/control`
-  - `features/students`
-  - `features/history`
-  - `features/checks`
-  - `features/chat`
-  - `features/server`
-- Pindahkan API client admin ke `src/lib/adminApi.js`.
-- Pindahkan socket setup ke hook `useAdminRealtime`.
+- [x] Solution .NET, WPF Teacher, Windows Service Agent, WPF Student Desktop.
+- [x] Pemisahan Session 0 dan desktop interaktif.
+- [x] Routing per role dan per-PC.
+- [x] HTTPS, HMAC discovery, certificate pinning, dan secret header.
+- [x] Multi-monitor GDI, frame StreamId/SequenceNumber, dan stale-connection rejection.
+- [x] Attention fullscreen virtual desktop dan keyboard policy dasar.
+- [x] Broadcast layar Teacher dasar dan chat dua arah.
+- [x] File download ber-checksum pada sesi pengguna.
+- [x] Warning-as-error serta 40 regression test.
+- [x] Command ID/TTL, acknowledgement Attention/Power, audit SQLite, dan replay Attention setelah Desktop reconnect.
+- [ ] Persisted classroom state dan recovery setelah Teacher restart.
+- [ ] Provisioning credential saat installer dan rotasi key.
+- [ ] MSI/WiX, upgrade/rollback, dan code signing.
 
-## Tahap 4: Client App State Machine
+## P1 - Monitoring dan demonstrasi
 
-- Ganti mode string manual dengan state machine kecil:
-  - `loading`
-  - `setup`
-  - `login`
-  - `precheck`
-  - `session`
-  - `postcheck`
-- Pindahkan Electron IPC wrapper ke `src/lib/electronApi.js`.
-- Pindahkan server discovery dan server health ke hook terpisah.
-- Pindahkan realtime client ke hook `useClientRealtime`.
+- [x] Thumbnail/focus serta pemilihan monitor.
+- [ ] DXGI Desktop Duplication, adaptive FPS/quality, dan telemetry.
+- [x] Target broadcast semua/terpilih, pause/resume, late-join state, dan sequence.
+- [ ] Target broadcast group tersimpan.
+- [ ] Exhibit layar siswa, pointer, annotation, snapshot.
+- [ ] Remote view/control dengan audit dan policy.
 
-## Tahap 5: Electron Hardening
+## P2 - Workflow kelas
 
-- Hilangkan `disable-web-security` dan `webSecurity: false` jika IPC request sudah cukup.
-- Batasi `api-request` hanya ke server URL yang tersimpan dan path allowlist.
-- Validasi payload IPC di main process.
-- Hindari hardcoded emergency password di renderer.
+- [x] Activity window, chat dasar, dan distribusi file download.
+- [ ] Login siswa, sesi, room/group/layout.
+- [ ] Help request, feedback/survey, quick launch.
+- [ ] App/web/audio policy lengkap dengan status per-PC.
+- [ ] File collect, retry, progress realtime, dan conflict handling.
 
-## Tahap 6: Tests dan Release Safety
+## P3 - Assessment dan technician
 
-- Tambah smoke test untuk build admin/client.
-- Tambah test backend untuk auth/logout/client command.
-- Tambah checklist release: build, syntax check, manual Electron smoke, update packaging.
+- [ ] Test builder, hasil, dan reporting.
+- [ ] Inventory hardware/software.
+- [ ] Process/service manager.
+- [ ] Print/USB/clipboard/device policy.
+- [ ] Journal, replay, dan lesson plan.
+
+## P4 - Release enterprise
+
+- [ ] MSI/GPO/Intune deployment.
+- [ ] Certificate signing dan signed update manifest.
+- [ ] Role-based admin, audit append-only, backup, disaster recovery.
+- [ ] Uji beban 40 PC dan soak test satu hari sekolah.
+
+## Jalur transisi
+
+Folder admin, client, dan server adalah implementasi legacy v1.2.1. Folder tersebut dibekukan sebagai rollback dan tidak menjadi arsitektur target. Jangan hapus sebelum P0/P1 native lulus uji lapangan dan installer native dapat rollback. Setelah itu, pindahkan ke tag arsip dan keluarkan dari paket rilis utama.

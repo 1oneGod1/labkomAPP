@@ -1,4 +1,4 @@
-Microsoft Visual Studio Solution File, Format Version 12.00
+﻿Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.8.0.0
 MinimumVisualStudioVersion = 10.0.40219.1
@@ -10,7 +10,11 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "LabKom.Student", "src\LabKo
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "LabKom.Teacher", "src\LabKom.Teacher\LabKom.Teacher.csproj", "{44444444-4444-4444-4444-444444444444}"
 EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "LabKom.Student.Overlay", "src\LabKom.Student.Overlay\LabKom.Student.Overlay.csproj", "{55555555-5555-5555-5555-555555555555}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "LabKom.Student.Desktop", "src\LabKom.Student.Desktop\LabKom.Student.Desktop.csproj", "{55555555-5555-5555-5555-555555555555}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{BD5503E3-BC29-4521-BD24-B89AF0823833}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LabKom.Tests", "tests\LabKom.Tests\LabKom.Tests.csproj", "{BB64FD26-622C-4AE9-B4A9-614E82C7FE97}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -38,8 +42,15 @@ Global
 		{55555555-5555-5555-5555-555555555555}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{55555555-5555-5555-5555-555555555555}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{55555555-5555-5555-5555-555555555555}.Release|Any CPU.Build.0 = Release|Any CPU
+		{BB64FD26-622C-4AE9-B4A9-614E82C7FE97}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BB64FD26-622C-4AE9-B4A9-614E82C7FE97}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BB64FD26-622C-4AE9-B4A9-614E82C7FE97}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BB64FD26-622C-4AE9-B4A9-614E82C7FE97}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{BB64FD26-622C-4AE9-B4A9-614E82C7FE97} = {BD5503E3-BC29-4521-BD24-B89AF0823833}
 	EndGlobalSection
 EndGlobal

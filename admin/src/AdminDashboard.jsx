@@ -36,6 +36,64 @@ function screenFrameToBlob(frame, mime = 'image/jpeg') {
   return null;
 }
 
+function StableScreenImage({ blob = null, src = null, alt, className }) {
+  const [displayedSrc, setDisplayedSrc] = useState(src || null);
+  const ownedUrlRef = useRef(null);
+  const requestRef = useRef(0);
+
+  useEffect(() => {
+    const requestId = ++requestRef.current;
+    if (!blob && !src) {
+      const previousUrl = ownedUrlRef.current;
+      ownedUrlRef.current = null;
+      setDisplayedSrc(null);
+      if (previousUrl) URL.revokeObjectURL(previousUrl);
+      return undefined;
+    }
+
+    const ownsUrl = Boolean(blob);
+    const nextSrc = ownsUrl ? URL.createObjectURL(blob) : src;
+    const probe = new Image();
+    probe.decoding = 'async';
+    let cancelled = false;
+    let committed = false;
+
+    const publish = () => {
+      if (cancelled || committed || requestRef.current !== requestId) return;
+      committed = true;
+      const previousUrl = ownedUrlRef.current;
+      ownedUrlRef.current = ownsUrl ? nextSrc : null;
+      setDisplayedSrc(nextSrc);
+      if (previousUrl && previousUrl !== nextSrc) {
+        requestAnimationFrame(() => requestAnimationFrame(() => URL.revokeObjectURL(previousUrl)));
+      }
+    };
+
+    probe.onload = publish;
+    probe.onerror = () => {
+      if (ownsUrl && !committed) URL.revokeObjectURL(nextSrc);
+    };
+    probe.src = nextSrc;
+    if (probe.complete && probe.naturalWidth > 0) publish();
+
+    return () => {
+      cancelled = true;
+      probe.onload = null;
+      probe.onerror = null;
+      if (ownsUrl && !committed) URL.revokeObjectURL(nextSrc);
+    };
+  }, [blob, src]);
+
+  useEffect(() => () => {
+    requestRef.current += 1;
+    if (ownedUrlRef.current) URL.revokeObjectURL(ownedUrlRef.current);
+    ownedUrlRef.current = null;
+  }, []);
+
+  if (!displayedSrc) return null;
+  return <img src={displayedSrc} alt={alt} className={className} draggable={false} />;
+}
+
 // ─── Banner IP Server (tampil di header) ──────────────────────────────────
 function ServerInfoBanner({ info }) {
   const [copied, setCopied] = useState(false);
@@ -345,21 +403,7 @@ export default function AdminDashboard() {
   const focusedScreenRef = useRef(null);
   const focusedDisplayRef = useRef(null);
   const screensRequestRef = useRef(null);
-  const screenObjectUrlsRef = useRef(new Map());
-
-  const revokeScreenObjectUrl = useCallback((pcName) => {
-    const currentUrl = screenObjectUrlsRef.current.get(pcName);
-    if (!currentUrl) return;
-    URL.revokeObjectURL(currentUrl);
-    screenObjectUrlsRef.current.delete(pcName);
-  }, []);
-
-  const releaseAllScreenObjectUrls = useCallback(() => {
-    for (const url of screenObjectUrlsRef.current.values()) {
-      URL.revokeObjectURL(url);
-    }
-    screenObjectUrlsRef.current.clear();
-  }, []);
+  const screenSequenceRef = useRef(new Map());
 
   const fetchScreens = useCallback(async (silent = false) => {
     if (!silent) setScreensLoading(true);
@@ -380,7 +424,7 @@ export default function AdminDashboard() {
       }
       const data = await res.json();
       if (data.success) {
-        releaseAllScreenObjectUrls();
+        screenSequenceRef.current.clear();
         setScreens(data.data || []);
       }
     } catch (err) {
@@ -393,7 +437,7 @@ export default function AdminDashboard() {
       }
       if (!silent) setScreensLoading(false);
     }
-  }, [releaseAllScreenObjectUrls]);
+  }, []);
 
   useEffect(() => {
     if (activeTab === 'screens') {
@@ -530,13 +574,13 @@ export default function AdminDashboard() {
     });
 
     socket.on('screens:snapshot', (data = []) => {
-      releaseAllScreenObjectUrls();
+      screenSequenceRef.current.clear();
       setScreens(Array.isArray(data) ? data : []);
     });
 
     socket.on('screen:update', (screen) => {
       if (!screen?.pc_name) return;
-      revokeScreenObjectUrl(screen.pc_name);
+      screenSequenceRef.current.delete(screen.pc_name);
       setScreens((prev) => {
         const next = prev.filter((item) => item.pc_name !== screen.pc_name);
         next.push(screen);
@@ -550,17 +594,16 @@ export default function AdminDashboard() {
       const blob = screenFrameToBlob(screen.frame, screen.mime);
       if (!blob) return;
 
-      const nextUrl = URL.createObjectURL(blob);
-      const previousUrl = screenObjectUrlsRef.current.get(screen.pc_name);
-      screenObjectUrlsRef.current.set(screen.pc_name, nextUrl);
-      if (previousUrl) {
-        setTimeout(() => URL.revokeObjectURL(previousUrl), 250);
-      }
+      const sequence = Number(screen.sequence) || 0;
+      const previousSequence = screenSequenceRef.current.get(screen.pc_name) || 0;
+      if (sequence > 0 && sequence <= previousSequence) return;
+      if (sequence > 0) screenSequenceRef.current.set(screen.pc_name, sequence);
 
       const now = Date.now();
       const nextScreen = {
         ...screen,
-        image: nextUrl,
+        image_blob: blob,
+        image: null,
         transport: 'binary',
         latency: Math.max(0, now - (Number(screen.captured_at) || now)),
         updated_at: Number(screen.received_at) || now,
@@ -577,7 +620,7 @@ export default function AdminDashboard() {
 
     socket.on('screen:remove', ({ pc_name } = {}) => {
       if (!pc_name) return;
-      revokeScreenObjectUrl(pc_name);
+      screenSequenceRef.current.delete(pc_name);
       setScreens((prev) => prev.filter((item) => item.pc_name !== pc_name));
       setFocusedScreen((prev) => (prev === pc_name ? null : prev));
       if (focusedScreenRef.current === pc_name) setFocusedDisplayId(null);
@@ -603,12 +646,12 @@ export default function AdminDashboard() {
       }
       socket.emit('admin:stop-watch-screen');
       socket.disconnect();
-      releaseAllScreenObjectUrls();
+      screenSequenceRef.current.clear();
       if (realtimeSocketRef.current === socket) {
         realtimeSocketRef.current = null;
       }
     };
-  }, [authReady, fetchPcs, refreshClientMacs, releaseAllScreenObjectUrls, revokeScreenObjectUrl]);
+  }, [authReady, fetchPcs, refreshClientMacs]);
 
   useEffect(() => {
     const socket = realtimeSocketRef.current;
@@ -1165,7 +1208,8 @@ export default function AdminDashboard() {
                 onClick={() => openFocusedScreen(s)}
               >
                 <div className="relative bg-slate-950 aspect-video overflow-hidden">
-                  <img
+                  <StableScreenImage
+                    blob={s.image_blob}
                     src={s.image}
                     alt={s.pc_name}
                     className="w-full h-full object-cover"
@@ -1250,7 +1294,8 @@ export default function AdminDashboard() {
                   </button>
                 </div>
               </div>
-              <img
+              <StableScreenImage
+                blob={focusedData.image_blob}
                 src={focusedData.image}
                 alt={focusedData.pc_name}
                 className="w-full object-contain bg-black"

@@ -1,6 +1,7 @@
 using System.IO;
 using System.Windows;
 using LabKom.Data;
+using LabKom.Shared.Hub;
 using LabKom.Teacher.Services;
 using LabKom.Teacher.ViewModels;
 using Microsoft.EntityFrameworkCore;
@@ -25,7 +26,21 @@ public partial class App : Application
         var builder = Host.CreateApplicationBuilder();
         builder.Configuration.SetBasePath(AppContext.BaseDirectory)
             .AddJsonFile("appsettings.json", optional: false)
+            .AddJsonFile("appsettings.Local.json", optional: true)
             .AddEnvironmentVariables();
+
+        var sharedSecret = Environment.GetEnvironmentVariable("LABKOM_SHARED_SECRET")
+                           ?? builder.Configuration["Teacher:SharedSecret"];
+        if (!HubSecurity.IsStrongSecret(sharedSecret))
+        {
+            MessageBox.Show(
+                $"LABKOM_SHARED_SECRET wajib diisi minimal {HubSecurity.MinimumSecretLength} karakter.",
+                "Konfigurasi LabKom belum lengkap",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+            Shutdown(-1);
+            return;
+        }
 
         builder.Logging.AddDebug();
 
@@ -34,7 +49,9 @@ public partial class App : Application
         builder.Services.AddDbContext<LabKomDbContext>(opt => opt.UseSqlite(connStr));
 
         // Singletons
+        builder.Services.AddSingleton<TeacherCertificateProvider>();
         builder.Services.AddSingleton<PresenceRegistry>();
+        builder.Services.AddSingleton<AttentionStateStore>();
         builder.Services.AddSingleton<HubContextHolder>();
         builder.Services.AddSingleton<ActivityFeed>();
         builder.Services.AddSingleton<WakeOnLanService>();

@@ -32,10 +32,13 @@ assert(
 );
 assert(
   viewer.includes("socket.on('admin:screen-share-frame-v2'") &&
+    viewer.includes('StableFrameImage') &&
+    viewer.includes('probe.onload = publish') &&
+    viewer.includes('lastSequenceRef') &&
     viewer.includes('URL.createObjectURL') &&
     viewer.includes('URL.revokeObjectURL') &&
     viewer.includes("socket.on('admin:screen-share-pause'"),
-  'Viewer client harus memakai Object URL, cleanup, dan status pause.',
+  'Viewer client harus decode sebelum swap, menolak frame usang, cleanup Object URL, dan mendukung pause.',
 );
 assert(
   clientMain.includes('admin_screen_binary_v1: true'),
@@ -45,10 +48,13 @@ assert(
 assert(
   dashboard.includes("socket.on('screen:update-v2'") &&
     dashboard.includes('screenFrameToBlob') &&
+    dashboard.includes('StableScreenImage') &&
+    dashboard.includes('probe.onload = publish') &&
+    dashboard.includes('screenSequenceRef') &&
     dashboard.includes('URL.createObjectURL') &&
     dashboard.includes('focusedDisplayId') &&
     dashboard.includes('student_screen_binary_v1: true'),
-  'Dashboard harus menerima layar siswa binary dan menyediakan pemilihan monitor.',
+  'Dashboard harus decode sebelum swap, menolak frame usang, menerima layar siswa binary, dan menyediakan pemilihan monitor.',
 );
 assert(
   relay.includes("socket.on('client:screen-v2'") &&

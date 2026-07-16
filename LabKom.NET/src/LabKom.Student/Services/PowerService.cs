@@ -4,12 +4,10 @@ using Microsoft.Extensions.Logging;
 
 namespace LabKom.Student.Services;
 
-/// <summary>
-/// Eksekusi perintah power dari Teacher: shutdown, restart, log off.
-/// Pakai shutdown.exe Windows untuk menghindari P/Invoke ExitWindowsEx
-/// yang butuh privilege adjustment.
-/// </summary>
-public class PowerService
+public sealed record CommandExecutionOutcome(bool Success, string Message);
+
+/// <summary>Executes validated Windows power commands through shutdown.exe.</summary>
+public sealed class PowerService
 {
     private readonly ILogger<PowerService> _logger;
 
@@ -18,40 +16,48 @@ public class PowerService
         _logger = logger;
     }
 
-    public void Execute(PowerCommand command)
+    public CommandExecutionOutcome Execute(PowerCommand command)
     {
-        var args = command.Action switch
+        var arguments = command.Action switch
         {
             PowerAction.Shutdown => $"/s /t {command.DelaySeconds} /f",
             PowerAction.Restart => $"/r /t {command.DelaySeconds} /f",
             PowerAction.LogOff => "/l",
             _ => null,
         };
-        if (args is null)
+        if (arguments is null)
         {
-            _logger.LogWarning("PowerCommand action tidak dikenali: {Action}", command.Action);
-            return;
+            return new CommandExecutionOutcome(false, "Power action tidak dikenal");
         }
 
         if (!string.IsNullOrEmpty(command.Reason))
         {
-            args += $" /c \"{command.Reason.Replace("\"", "")}\"";
+            arguments += $" /c \"{command.Reason.Replace("\"", string.Empty)}\"";
         }
 
         try
         {
-            _logger.LogWarning("Mengeksekusi PowerCommand: {Action} (delay {Delay}s)", command.Action, command.DelaySeconds);
-            Process.Start(new ProcessStartInfo
+            _logger.LogWarning(
+                "Mengeksekusi PowerCommand {CommandId}: {Action} delay {Delay}s",
+                command.CommandId,
+                command.Action,
+                command.DelaySeconds);
+            using var process = Process.Start(new ProcessStartInfo
             {
                 FileName = "shutdown.exe",
-                Arguments = args,
+                Arguments = arguments,
                 CreateNoWindow = true,
                 UseShellExecute = false,
             });
+
+            return process is null
+                ? new CommandExecutionOutcome(false, "shutdown.exe tidak dapat dimulai")
+                : new CommandExecutionOutcome(true, "Perintah power diterima Windows");
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Gagal menjalankan shutdown.exe");
+            return new CommandExecutionOutcome(false, ex.Message);
         }
     }
 }

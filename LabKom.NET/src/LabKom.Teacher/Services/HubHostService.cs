@@ -22,6 +22,7 @@ public class HubHostService : IHostedService
 {
     private readonly IConfiguration _config;
     private readonly PresenceRegistry _registry;
+    private readonly TeacherCertificateProvider _certificate;
     private readonly HubContextHolder _holder;
     private readonly FileDistributionService _files;
     private readonly ActivityFeed _feed;
@@ -31,6 +32,7 @@ public class HubHostService : IHostedService
     public HubHostService(
         IConfiguration config,
         PresenceRegistry registry,
+        TeacherCertificateProvider certificate,
         HubContextHolder holder,
         FileDistributionService files,
         ActivityFeed feed,
@@ -38,6 +40,7 @@ public class HubHostService : IHostedService
     {
         _config = config;
         _registry = registry;
+        _certificate = certificate;
         _holder = holder;
         _files = files;
         _feed = feed;
@@ -50,9 +53,9 @@ public class HubHostService : IHostedService
         var sharedSecret = Environment.GetEnvironmentVariable("LABKOM_SHARED_SECRET")
                            ?? _config["Teacher:SharedSecret"]
                            ?? string.Empty;
-        if (sharedSecret.Length < 16)
+        if (!HubSecurity.IsStrongSecret(sharedSecret))
         {
-            throw new InvalidOperationException("LABKOM_SHARED_SECRET/Teacher:SharedSecret wajib diisi minimal 16 karakter.");
+            throw new InvalidOperationException("LABKOM_SHARED_SECRET/Teacher:SharedSecret wajib diisi minimal 32 karakter.");
         }
 
         var builder = WebApplication.CreateBuilder();
@@ -69,7 +72,7 @@ public class HubHostService : IHostedService
 
         builder.WebHost.ConfigureKestrel(opt =>
         {
-            opt.ListenAnyIP(port);
+            opt.ListenAnyIP(port, listen => listen.UseHttps(_certificate.Certificate));
             // File besar bisa di-upload via HTTP (file distribution dari guru → siswa).
             opt.Limits.MaxRequestBodySize = 200 * 1024 * 1024; // 200MB
         });

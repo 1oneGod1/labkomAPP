@@ -14,6 +14,7 @@ public class ActivityFeed
 
     public event EventHandler<ActivityRecord>? RecordReceived;
     public event EventHandler<FileDistributionProgress>? FileProgressReceived;
+    public event EventHandler<CommandResult>? CommandResultReceived;
 
     public void Push(ActivityRecord record)
     {
@@ -25,6 +26,11 @@ public class ActivityFeed
     public void PushFileProgress(FileDistributionProgress progress)
     {
         FileProgressReceived?.Invoke(this, progress);
+    }
+
+    public void PushCommandResult(CommandResult result)
+    {
+        CommandResultReceived?.Invoke(this, result);
     }
 
     public IReadOnlyCollection<ActivityRecord> Recent() => _buffer.ToArray();

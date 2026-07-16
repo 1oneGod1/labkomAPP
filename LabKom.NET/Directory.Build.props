@@ -3,10 +3,10 @@
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <Authors>LabKom Team</Authors>
     <Product>LabKom Lab Management</Product>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <RootNamespace>$(MSBuildProjectName)</RootNamespace>
   </PropertyGroup>
 </Project>

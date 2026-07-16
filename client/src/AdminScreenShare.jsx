@@ -14,6 +14,71 @@ function frameToBlob(frame, mime = 'image/jpeg') {
   return null;
 }
 
+function StableFrameImage({ blob = null, src = null }) {
+  const [displayedSrc, setDisplayedSrc] = useState(src || null);
+  const ownedUrlRef = useRef(null);
+  const requestRef = useRef(0);
+
+  useEffect(() => {
+    const requestId = ++requestRef.current;
+    if (!blob && !src) {
+      const previousUrl = ownedUrlRef.current;
+      ownedUrlRef.current = null;
+      setDisplayedSrc(null);
+      if (previousUrl) URL.revokeObjectURL(previousUrl);
+      return undefined;
+    }
+
+    const ownsUrl = Boolean(blob);
+    const nextSrc = ownsUrl ? URL.createObjectURL(blob) : src;
+    const probe = new Image();
+    probe.decoding = 'async';
+    let cancelled = false;
+    let committed = false;
+
+    const publish = () => {
+      if (cancelled || committed || requestRef.current !== requestId) return;
+      committed = true;
+      const previousUrl = ownedUrlRef.current;
+      ownedUrlRef.current = ownsUrl ? nextSrc : null;
+      setDisplayedSrc(nextSrc);
+      if (previousUrl && previousUrl !== nextSrc) {
+        requestAnimationFrame(() => requestAnimationFrame(() => URL.revokeObjectURL(previousUrl)));
+      }
+    };
+
+    probe.onload = publish;
+    probe.onerror = () => {
+      if (ownsUrl && !committed) URL.revokeObjectURL(nextSrc);
+    };
+    probe.src = nextSrc;
+    if (probe.complete && probe.naturalWidth > 0) publish();
+
+    return () => {
+      cancelled = true;
+      probe.onload = null;
+      probe.onerror = null;
+      if (ownsUrl && !committed) URL.revokeObjectURL(nextSrc);
+    };
+  }, [blob, src]);
+
+  useEffect(() => () => {
+    requestRef.current += 1;
+    if (ownedUrlRef.current) URL.revokeObjectURL(ownedUrlRef.current);
+    ownedUrlRef.current = null;
+  }, []);
+
+  if (!displayedSrc) return null;
+  return (
+    <img
+      src={displayedSrc}
+      alt="Layar instruktur"
+      className="w-full h-full object-contain"
+      draggable={false}
+    />
+  );
+}
+
 /**
  * Viewer broadcast instruktur. Transport v2 memakai frame biner/Object URL agar
  * tidak menggandakan ukuran data seperti base64; event lama tetap didukung.
@@ -21,50 +86,45 @@ function frameToBlob(frame, mime = 'image/jpeg') {
 export default function AdminScreenShare({ socket }) {
   const [active, setActive] = useState(false);
   const [paused, setPaused] = useState(false);
-  const [frameUrl, setFrameUrl] = useState(null);
+  const [frameSource, setFrameSource] = useState({ blob: null, src: null });
   const [metadata, setMetadata] = useState({ source_label: 'Layar Instruktur' });
   const [stats, setStats] = useState({ fps: 0, latency: 0, width: 0, height: 0, transport: 'binary' });
-  const currentUrlRef = useRef(null);
-  const objectUrlsRef = useRef(new Set());
   const frameStatsRef = useRef({ count: 0, sampledAt: Date.now() });
-
-  const releaseObjectUrls = (except = null) => {
-    for (const url of objectUrlsRef.current) {
-      if (url === except) continue;
-      URL.revokeObjectURL(url);
-      objectUrlsRef.current.delete(url);
-    }
-  };
+  const lastSequenceRef = useRef(0);
+  const sessionIdRef = useRef(null);
 
   useEffect(() => {
     if (!socket) return undefined;
 
+    const belongsToCurrentSession = (data = {}) => (
+      !data.session_id || !sessionIdRef.current || data.session_id === sessionIdRef.current
+    );
+
     const onStart = (data = {}) => {
+      sessionIdRef.current = data.session_id || null;
+      lastSequenceRef.current = 0;
       setActive(true);
       setPaused(Boolean(data.paused));
       setMetadata({ source_label: data.source_label || 'Layar Instruktur', ...data });
-      setFrameUrl(null);
-      currentUrlRef.current = null;
-      releaseObjectUrls();
+      setFrameSource({ blob: null, src: null });
       frameStatsRef.current = { count: 0, sampledAt: Date.now() };
     };
 
     const onLegacyFrame = (data = {}) => {
-      if (!data.image) return;
-      releaseObjectUrls();
-      currentUrlRef.current = null;
-      setFrameUrl(data.image);
+      if (!data.image || !belongsToCurrentSession(data)) return;
+      setFrameSource({ blob: null, src: data.image });
       setStats((previous) => ({ ...previous, transport: 'compatibility' }));
     };
 
     const onBinaryFrame = (data = {}) => {
+      if (!belongsToCurrentSession(data)) return;
+      const sequence = Number(data.sequence) || 0;
+      if (sequence > 0 && sequence <= lastSequenceRef.current) return;
+
       const blob = frameToBlob(data.frame, data.mime);
       if (!blob) return;
-
-      const nextUrl = URL.createObjectURL(blob);
-      objectUrlsRef.current.add(nextUrl);
-      currentUrlRef.current = nextUrl;
-      setFrameUrl(nextUrl);
+      if (sequence > 0) lastSequenceRef.current = sequence;
+      setFrameSource({ blob, src: null });
 
       const now = Date.now();
       const sample = frameStatsRef.current;
@@ -82,16 +142,18 @@ export default function AdminScreenShare({ socket }) {
       }
     };
 
-    const onPause = ({ paused: nextPaused } = {}) => {
-      setPaused(Boolean(nextPaused));
+    const onPause = (data = {}) => {
+      if (!belongsToCurrentSession(data)) return;
+      setPaused(Boolean(data.paused));
     };
 
-    const onStop = () => {
+    const onStop = (data = {}) => {
+      if (!belongsToCurrentSession(data)) return;
       setActive(false);
       setPaused(false);
-      setFrameUrl(null);
-      currentUrlRef.current = null;
-      releaseObjectUrls();
+      setFrameSource({ blob: null, src: null });
+      lastSequenceRef.current = 0;
+      sessionIdRef.current = null;
     };
 
     socket.on('admin:screen-share-start', onStart);
@@ -106,7 +168,6 @@ export default function AdminScreenShare({ socket }) {
       socket.off('admin:screen-share-frame-v2', onBinaryFrame);
       socket.off('admin:screen-share-pause', onPause);
       socket.off('admin:screen-share-stop', onStop);
-      releaseObjectUrls();
     };
   }, [socket]);
 
@@ -135,14 +196,8 @@ export default function AdminScreenShare({ socket }) {
       </div>
 
       <div className="relative flex-1 flex items-center justify-center bg-black overflow-hidden">
-        {frameUrl ? (
-          <img
-            src={frameUrl}
-            alt="Layar instruktur"
-            className="w-full h-full object-contain"
-            draggable={false}
-            onLoad={() => releaseObjectUrls(currentUrlRef.current)}
-          />
+        {(frameSource.blob || frameSource.src) ? (
+          <StableFrameImage blob={frameSource.blob} src={frameSource.src} />
         ) : (
           <div className="flex flex-col items-center space-y-4 text-slate-500">
             <Monitor className="w-16 h-16 opacity-30" />

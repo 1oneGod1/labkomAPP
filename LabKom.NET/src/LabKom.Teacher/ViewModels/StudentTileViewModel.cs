@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.IO;
 using System.Windows.Media.Imaging;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -7,14 +8,21 @@ namespace LabKom.Teacher.ViewModels;
 
 public partial class StudentTileViewModel : ObservableObject
 {
-    [ObservableProperty] private string _pcName = "";
-    [ObservableProperty] private string _ipAddress = "";
-    [ObservableProperty] private string _macAddress = "";
+    private string? _lastFrameStreamId;
+    private long _lastFrameSequence;
+
+    [ObservableProperty] private string _pcName = string.Empty;
+    [ObservableProperty] private string _ipAddress = string.Empty;
+    [ObservableProperty] private string _macAddress = string.Empty;
     [ObservableProperty] private string? _studentName;
     [ObservableProperty] private StudentStatus _status;
     [ObservableProperty] private DateTime _lastSeen;
     [ObservableProperty] private BitmapImage? _thumbnail;
     [ObservableProperty] private bool _isSelected;
+    [ObservableProperty] private string _currentMonitorId = string.Empty;
+    [ObservableProperty] private string _frameResolution = string.Empty;
+
+    public ObservableCollection<MonitorOptionViewModel> Monitors { get; } = new();
 
     public string StatusLabel => Status switch
     {
@@ -44,34 +52,77 @@ public partial class StudentTileViewModel : ObservableObject
     {
         Status = update.Status;
         LastSeen = DateTime.UtcNow;
-        if (update.Snapshot is { } snap)
+        if (update.Snapshot is { } snapshot)
         {
-            IpAddress = snap.IpAddress;
-            MacAddress = snap.MacAddress;
-            StudentName = snap.StudentName;
+            IpAddress = snapshot.IpAddress;
+            MacAddress = snapshot.MacAddress;
+            StudentName = snapshot.StudentName;
         }
+
         if (Status == StudentStatus.Offline)
         {
             Thumbnail = null;
+            Monitors.Clear();
+            CurrentMonitorId = string.Empty;
+            FrameResolution = string.Empty;
+            _lastFrameStreamId = null;
+            _lastFrameSequence = 0;
         }
     }
 
-    public void ApplyFrame(ScreenFrame frame)
+    public void ApplyInventory(MonitorInventory inventory)
     {
-        if (frame.JpegData.Length == 0) return;
+        var options = inventory.Monitors
+            .OrderByDescending(monitor => monitor.IsPrimary)
+            .ThenBy(monitor => monitor.Left)
+            .ThenBy(monitor => monitor.Top)
+            .Select((monitor, index) => new MonitorOptionViewModel(
+                monitor.Id,
+                $"Monitor {index + 1} - {monitor.Width}x{monitor.Height}" +
+                (monitor.IsPrimary ? " (Utama)" : string.Empty),
+                monitor.IsPrimary))
+            .ToArray();
+
+        if (Monitors.SequenceEqual(options)) return;
+
+        Monitors.Clear();
+        foreach (var option in options)
+        {
+            Monitors.Add(option);
+        }
+    }
+
+    public bool ApplyFrame(ScreenFrame frame)
+    {
+        if (frame.JpegData.Length == 0) return false;
+        if (string.Equals(_lastFrameStreamId, frame.StreamId, StringComparison.Ordinal)
+            && frame.SequenceNumber <= _lastFrameSequence)
+        {
+            return false;
+        }
+
         try
         {
-            var bmp = new BitmapImage();
-            bmp.BeginInit();
-            bmp.CacheOption = BitmapCacheOption.OnLoad;
-            bmp.StreamSource = new MemoryStream(frame.JpegData);
-            bmp.EndInit();
-            bmp.Freeze();
-            Thumbnail = bmp;
+            var bitmap = new BitmapImage();
+            bitmap.BeginInit();
+            bitmap.CacheOption = BitmapCacheOption.OnLoad;
+            bitmap.StreamSource = new MemoryStream(frame.JpegData);
+            bitmap.EndInit();
+            bitmap.Freeze();
+
+            Thumbnail = bitmap;
+            CurrentMonitorId = frame.MonitorId;
+            FrameResolution = $"{frame.Width}x{frame.Height}";
+            _lastFrameStreamId = frame.StreamId;
+            _lastFrameSequence = frame.SequenceNumber;
+            return true;
         }
         catch
         {
-            // Frame corrupt — abaikan, frame berikutnya akan menggantikan.
+            // Frame rusak diabaikan; gambar terakhir tetap tampil.
+            return false;
         }
     }
 }
+
+public sealed record MonitorOptionViewModel(string Id, string Label, bool IsPrimary);

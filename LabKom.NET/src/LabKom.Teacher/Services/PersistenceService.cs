@@ -42,6 +42,7 @@ public class PersistenceService : IHostedService
         _presence.PresenceChanged += OnPresenceChanged;
         _presence.ChatReceived += OnChatReceived;
         _activity.RecordReceived += OnActivityReceived;
+        _activity.CommandResultReceived += OnCommandResultReceived;
     }
 
     public Task StopAsync(CancellationToken cancellationToken)
@@ -49,6 +50,7 @@ public class PersistenceService : IHostedService
         _presence.PresenceChanged -= OnPresenceChanged;
         _presence.ChatReceived -= OnChatReceived;
         _activity.RecordReceived -= OnActivityReceived;
+        _activity.CommandResultReceived -= OnCommandResultReceived;
         return Task.CompletedTask;
     }
 
@@ -60,6 +62,9 @@ public class PersistenceService : IHostedService
 
     private void OnActivityReceived(object? sender, ActivityRecord r) =>
         _ = PersistActivityAsync(r);
+
+    private void OnCommandResultReceived(object? sender, CommandResult result) =>
+        _ = PersistCommandResultAsync(result);
 
     private async Task PersistPresenceAsync(PresenceUpdate update)
     {
@@ -94,13 +99,35 @@ public class PersistenceService : IHostedService
             {
                 PcName = msg.FromPcName ?? "(broadcast)",
                 Kind = ActivityKind.ChatSent,
-                Title = $"[{msg.Direction}] {msg.Body}",
+                Title = Limit($"[{msg.Direction}] {msg.Body}", 256),
+                Detail = Limit(msg.Body, 1_024),
             });
             await db.SaveChangesAsync();
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Gagal persist chat");
+        }
+    }
+
+    private async Task PersistCommandResultAsync(CommandResult result)
+    {
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<LabKomDbContext>();
+            db.Activities.Add(new ActivityLog
+            {
+                PcName = result.PcName,
+                Kind = ActivityKind.System,
+                Title = Limit($"{result.Kind}: {result.State}", 256),
+                Detail = Limit($"{result.CommandId} | {result.Message}", 1_024),
+            });
+            await db.SaveChangesAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Gagal persist command result");
         }
     }
 
@@ -114,8 +141,8 @@ public class PersistenceService : IHostedService
             {
                 PcName = r.PcName,
                 Kind = MapKind(r.Kind),
-                Title = r.Title,
-                Detail = r.ProcessName,
+                Title = Limit(r.Title, 256),
+                Detail = LimitNullable(r.ProcessName, 1_024),
             });
             await db.SaveChangesAsync();
         }
@@ -124,6 +151,12 @@ public class PersistenceService : IHostedService
             _logger.LogWarning(ex, "Gagal persist activity");
         }
     }
+
+    private static string Limit(string value, int maximumLength) =>
+        value.Length <= maximumLength ? value : value[..maximumLength];
+
+    private static string? LimitNullable(string? value, int maximumLength) =>
+        value is null ? null : Limit(value, maximumLength);
 
     private static ActivityKind MapKind(ActivityRecordKind k) => k switch
     {

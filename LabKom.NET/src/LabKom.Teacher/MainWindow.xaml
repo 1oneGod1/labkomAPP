@@ -78,7 +78,8 @@
                             Visibility="{Binding IsScreenBroadcasting, Converter={x:Static vm:BooleanToVisibilityConv.Instance}}">
                         <StackPanel Orientation="Horizontal">
                             <Ellipse Width="6" Height="6" Fill="#EF4444" VerticalAlignment="Center" />
-                            <TextBlock Text="LIVE Broadcast" Foreground="White" FontSize="10" Margin="6,0,0,0" />
+                            <TextBlock Text="{Binding ScreenBroadcastTarget, StringFormat=LIVE: {0}}"
+                                       Foreground="White" FontSize="10" Margin="6,0,0,0" />
                         </StackPanel>
                     </Border>
                     <Border Background="#1E40AF" Padding="12,6" CornerRadius="6">
@@ -111,10 +112,27 @@
                         </Style>
                     </Button.Style>
                 </Button>
+                <Button Command="{Binding ToggleScreenBroadcastPauseCommand}">
+                    <Button.Style>
+                        <Style TargetType="Button" BasedOn="{StaticResource ToolbarBtn}">
+                            <Setter Property="Content" Value="Jeda Broadcast" />
+                            <Setter Property="IsEnabled" Value="False" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsScreenBroadcasting}" Value="True">
+                                    <Setter Property="IsEnabled" Value="True" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding IsScreenBroadcastPaused}" Value="True">
+                                    <Setter Property="Content" Value="Lanjutkan Broadcast" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Button.Style>
+                </Button>
                 <Button Content="📂 Bagikan File ke Semua" Style="{StaticResource AccentBtn}" Command="{Binding ShareFileToAllCommand}" />
                 <Button Content="⏻ Shutdown Semua" Style="{StaticResource DangerBtn}" Command="{Binding ShutdownAllCommand}" />
                 <Separator Margin="6,0" />
                 <TextBox Text="{Binding BroadcastMessage, UpdateSourceTrigger=PropertyChanged}"
+                         MaxLength="2000"
                          Width="220" Height="32" VerticalContentAlignment="Center"
                          Background="#1E293B" Foreground="#E2E8F0"
                          BorderBrush="#334155" Padding="8,0" Margin="0,0,8,0" />
@@ -238,6 +256,13 @@
                                 <TextBlock Text="{Binding SelectedStudent.IpAddress}" FontFamily="Consolas" FontSize="12" />
                                 <TextBlock Text="MAC" Foreground="{StaticResource MutedBrush}" FontSize="10" Margin="0,6,0,0" />
                                 <TextBlock Text="{Binding SelectedStudent.MacAddress}" FontFamily="Consolas" FontSize="12" />
+                                <TextBlock Text="Monitor" Foreground="{StaticResource MutedBrush}" FontSize="10" Margin="0,8,0,3" />
+                                <ComboBox ItemsSource="{Binding SelectedStudent.Monitors}"
+                                          SelectedItem="{Binding SelectedMonitor, Mode=TwoWay}"
+                                          DisplayMemberPath="Label"
+                                          MinHeight="30" Padding="6,2" />
+                                <TextBlock Text="{Binding SelectedStudent.FrameResolution, StringFormat=Frame: {0}}"
+                                           Foreground="{StaticResource MutedBrush}" FontSize="10" Margin="0,4,0,0" />
 
                                 <TextBlock Text="Aksi" Foreground="{StaticResource MutedBrush}"
                                            FontSize="11" FontWeight="SemiBold" Margin="0,18,0,8" />
@@ -247,6 +272,9 @@
                                 <Button Content="🔓 Buka Kunci" Style="{StaticResource ToolbarBtn}"
                                         HorizontalContentAlignment="Center" Margin="0,0,0,6"
                                         Command="{Binding UnlockSelectedCommand}" />
+                                <Button Content="Broadcast layar ke PC ini" Style="{StaticResource AccentBtn}"
+                                        HorizontalContentAlignment="Center" Margin="0,0,0,6"
+                                        Command="{Binding StartScreenBroadcastSelectedCommand}" />
                                 <Button Content="📂 Kirim File ke PC ini" Style="{StaticResource AccentBtn}"
                                         HorizontalContentAlignment="Center" Margin="0,0,0,6"
                                         Command="{Binding ShareFileToSelectedCommand}" />
@@ -337,7 +365,7 @@
         <!-- Footer -->
         <Border Grid.Row="3" Background="{StaticResource SurfaceBrush}" Padding="20,8"
                 BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,1,0,0">
-            <TextBlock Text="UDP Discovery · SignalR Hub @ 41235 · v0.3.0 (Phase 3)"
+            <TextBlock Text="UDP Discovery · SignalR Hub @ 41235 · v0.2.0 (Native foundation)"
                        Foreground="{StaticResource MutedBrush}" FontSize="11" />
         </Border>
     </Grid>

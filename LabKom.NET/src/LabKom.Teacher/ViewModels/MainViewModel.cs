@@ -16,6 +16,7 @@ public partial class MainViewModel : ObservableObject
     private readonly TeacherScreenBroadcaster _broadcaster;
     private readonly FileDistributionService _files;
     private readonly ActivityFeed _feed;
+    private bool _suppressMonitorCommand;
 
     private const int MaxActivityRows = 200;
 
@@ -23,8 +24,11 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private int _onlineCount;
     [ObservableProperty] private int _totalCount;
     [ObservableProperty] private StudentTileViewModel? _selectedStudent;
+    [ObservableProperty] private MonitorOptionViewModel? _selectedMonitor;
     [ObservableProperty] private string _broadcastMessage = "";
     [ObservableProperty] private bool _isScreenBroadcasting;
+    [ObservableProperty] private bool _isScreenBroadcastPaused;
+    [ObservableProperty] private string _screenBroadcastTarget = "Semua siswa";
 
     public ObservableCollection<StudentTileViewModel> Students { get; } = new();
     public ObservableCollection<ActivityEntryViewModel> Activities { get; } = new();
@@ -46,9 +50,12 @@ public partial class MainViewModel : ObservableObject
 
         _registry.PresenceChanged += OnPresenceChanged;
         _registry.FrameUpdated += OnFrameUpdated;
+        _registry.MonitorInventoryUpdated += OnMonitorInventoryUpdated;
+        _registry.ChatReceived += OnChatReceived;
         _feed.RecordReceived += OnActivityReceived;
-        _broadcaster.ActiveChanged += (_, active) =>
-            Application.Current?.Dispatcher.Invoke(() => IsScreenBroadcasting = active);
+        _feed.CommandResultReceived += OnCommandResultReceived;
+        _broadcaster.StateChanged += (_, _) =>
+            Application.Current?.Dispatcher.Invoke(ApplyBroadcastState);
 
         ServerStatus = "Hub aktif. Menunggu Student Agent…";
     }
@@ -59,8 +66,26 @@ public partial class MainViewModel : ObservableObject
     private void OnFrameUpdated(object? sender, ScreenFrame frame) =>
         Application.Current?.Dispatcher.Invoke(() => ApplyFrame(frame));
 
-    private void OnActivityReceived(object? sender, ActivityRecord r) =>
-        Application.Current?.Dispatcher.Invoke(() => ApplyActivity(r));
+    private void OnMonitorInventoryUpdated(object? sender, MonitorInventory inventory) =>
+        Application.Current?.Dispatcher.Invoke(() => ApplyMonitorInventory(inventory));
+
+    private void OnActivityReceived(object? sender, ActivityRecord record) =>
+        Application.Current?.Dispatcher.Invoke(() => ApplyActivity(record));
+
+    private void OnChatReceived(object? sender, ChatMessage message) =>
+        Application.Current?.Dispatcher.Invoke(() => ApplyChat(message));
+
+    private void OnCommandResultReceived(object? sender, CommandResult result) =>
+        Application.Current?.Dispatcher.Invoke(() => ApplyCommandResult(result));
+
+    private void ApplyBroadcastState()
+    {
+        IsScreenBroadcasting = _broadcaster.IsActive;
+        IsScreenBroadcastPaused = _broadcaster.IsPaused;
+        ScreenBroadcastTarget = _broadcaster.TargetPcName is null
+            ? "Semua siswa"
+            : _broadcaster.TargetPcName;
+    }
 
     private void ApplyPresence(PresenceUpdate update)
     {
@@ -83,24 +108,87 @@ public partial class MainViewModel : ObservableObject
         tile?.ApplyFrame(frame);
     }
 
-    private void ApplyActivity(ActivityRecord r)
+    private void ApplyMonitorInventory(MonitorInventory inventory)
     {
-        Activities.Insert(0, ActivityEntryViewModel.From(r));
-        while (Activities.Count > MaxActivityRows) Activities.RemoveAt(Activities.Count - 1);
+        var tile = Students.FirstOrDefault(student =>
+            string.Equals(student.PcName, inventory.PcName, StringComparison.OrdinalIgnoreCase));
+        if (tile is null) return;
+
+        var previousMonitorId = ReferenceEquals(tile, SelectedStudent)
+            ? SelectedMonitor?.Id
+            : null;
+        tile.ApplyInventory(inventory);
+
+        if (!ReferenceEquals(tile, SelectedStudent)) return;
+        SelectedMonitor = tile.Monitors.FirstOrDefault(monitor =>
+                              string.Equals(monitor.Id, previousMonitorId, StringComparison.OrdinalIgnoreCase))
+                          ?? tile.Monitors.FirstOrDefault(monitor => monitor.IsPrimary)
+                          ?? tile.Monitors.FirstOrDefault();
+    }
+
+    private void ApplyActivity(ActivityRecord record)
+    {
+        Activities.Insert(0, ActivityEntryViewModel.From(record));
+        TrimActivityRows();
+    }
+
+    private void ApplyChat(ChatMessage message)
+    {
+        Activities.Insert(0, ActivityEntryViewModel.FromChat(message));
+        TrimActivityRows();
+    }
+
+    private void ApplyCommandResult(CommandResult result)
+    {
+        Activities.Insert(0, ActivityEntryViewModel.FromCommandResult(result));
+        TrimActivityRows();
+    }
+
+    private void TrimActivityRows()
+    {
+        while (Activities.Count > MaxActivityRows)
+        {
+            Activities.RemoveAt(Activities.Count - 1);
+        }
     }
 
     partial void OnSelectedStudentChanged(StudentTileViewModel? oldValue, StudentTileViewModel? newValue)
     {
         if (oldValue is not null) oldValue.IsSelected = false;
+
+        _suppressMonitorCommand = true;
+        try
+        {
+            SelectedMonitor = newValue?.Monitors.FirstOrDefault(monitor => monitor.IsPrimary)
+                              ?? newValue?.Monitors.FirstOrDefault();
+        }
+        finally
+        {
+            _suppressMonitorCommand = false;
+        }
+
         if (newValue is not null)
         {
             newValue.IsSelected = true;
-            _ = _remote.SetCaptureProfileAsync(newValue.PcName, CaptureProfile.Focus);
+            _ = _remote.SetCaptureProfileAsync(
+                newValue.PcName,
+                CaptureProfile.Focus,
+                SelectedMonitor?.Id);
         }
+
         if (oldValue is not null && newValue?.PcName != oldValue.PcName)
         {
             _ = _remote.SetCaptureProfileAsync(oldValue.PcName, CaptureProfile.Thumbnail);
         }
+    }
+
+    partial void OnSelectedMonitorChanged(MonitorOptionViewModel? value)
+    {
+        if (_suppressMonitorCommand || SelectedStudent is null || value is null) return;
+        _ = _remote.SetCaptureProfileAsync(
+            SelectedStudent.PcName,
+            CaptureProfile.Focus,
+            value.Id);
     }
 
     [RelayCommand]
@@ -162,7 +250,25 @@ public partial class MainViewModel : ObservableObject
     private async Task ToggleScreenBroadcast()
     {
         if (_broadcaster.IsActive) await _broadcaster.StopAsync();
-        else await _broadcaster.StartAsync();
+        else await _broadcaster.StartAsync(targetPcName: null);
+    }
+
+    [RelayCommand]
+    private async Task ToggleScreenBroadcastPause()
+    {
+        await _broadcaster.TogglePauseAsync();
+    }
+
+    [RelayCommand]
+    private async Task StartScreenBroadcastSelected()
+    {
+        if (SelectedStudent is null) return;
+        if (_broadcaster.IsActive)
+        {
+            await _broadcaster.StopAsync();
+        }
+
+        await _broadcaster.StartAsync(SelectedStudent.PcName);
     }
 
     [RelayCommand]

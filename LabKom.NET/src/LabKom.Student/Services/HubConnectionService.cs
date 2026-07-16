@@ -1,32 +1,29 @@
 using LabKom.Shared.Contracts;
+using LabKom.Shared.Devices;
+using LabKom.Shared.Discovery;
 using LabKom.Shared.Hub;
+using LabKom.Shared.Security;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
 namespace LabKom.Student.Services;
 
-public class HubConnectionService : IAsyncDisposable
+/// <summary>
+/// Control-plane connection for the Windows Service. Only privileged operations
+/// are accepted here; interactive features belong to LabKom.Student.Desktop.
+/// </summary>
+public sealed class HubConnectionService : IAsyncDisposable
 {
     private readonly ILogger<HubConnectionService> _logger;
     private readonly TeacherEndpointStore _endpointStore;
     private readonly MachineIdentity _identity;
-    private readonly CaptureProfileState _profileState;
     private readonly PowerService _powerService;
-    private readonly FileDownloader _downloader;
     private readonly WebFilterEnforcer _webFilter;
     private readonly AppBlockEnforcer _appBlock;
     private readonly string _sharedSecret;
-    private HubConnection? _connection;
     private readonly SemaphoreSlim _connectGate = new(1, 1);
-
-    public event EventHandler<AttentionCommand>? AttentionReceived;
-    public event EventHandler<ChatMessage>? ChatReceived;
-    public event EventHandler<PowerCommand>? PowerReceived;
-    public event EventHandler<CaptureProfileCommand>? CaptureProfileReceived;
-    public event EventHandler<FileDistributionNotice>? FileNoticeReceived;
-    public event EventHandler<WebFilterPolicy>? WebFilterPolicyReceived;
-    public event EventHandler<AppBlockPolicy>? AppBlockPolicyReceived;
+    private HubConnection? _connection;
 
     public bool IsConnected => _connection?.State == HubConnectionState.Connected;
 
@@ -34,9 +31,7 @@ public class HubConnectionService : IAsyncDisposable
         ILogger<HubConnectionService> logger,
         TeacherEndpointStore endpointStore,
         MachineIdentity identity,
-        CaptureProfileState profileState,
         PowerService powerService,
-        FileDownloader downloader,
         WebFilterEnforcer webFilter,
         AppBlockEnforcer appBlock,
         IConfiguration configuration)
@@ -44,9 +39,7 @@ public class HubConnectionService : IAsyncDisposable
         _logger = logger;
         _endpointStore = endpointStore;
         _identity = identity;
-        _profileState = profileState;
         _powerService = powerService;
-        _downloader = downloader;
         _webFilter = webFilter;
         _appBlock = appBlock;
         _sharedSecret = Environment.GetEnvironmentVariable("LABKOM_SHARED_SECRET")
@@ -56,14 +49,15 @@ public class HubConnectionService : IAsyncDisposable
 
     public async Task EnsureConnectedAsync(CancellationToken ct)
     {
-        var url = _endpointStore.BuildHubUrl();
-        if (_sharedSecret.Length < 16)
+        var snapshot = _endpointStore.GetFreshSnapshot();
+        var endpoint = snapshot?.Beacon;
+        var url = snapshot?.HubUrl;
+        if (!HubSecurity.IsStrongSecret(_sharedSecret))
         {
-            _logger.LogError("LABKOM_SHARED_SECRET/Agent:SharedSecret belum dikonfigurasi.");
+            _logger.LogError("LABKOM_SHARED_SECRET/Agent:SharedSecret wajib minimal {Length} karakter.", HubSecurity.MinimumSecretLength);
             return;
         }
-        if (url is null) return;
-        if (IsConnected) return;
+        if (endpoint is null || url is null || IsConnected) return;
 
         await _connectGate.WaitAsync(ct);
         try
@@ -71,50 +65,53 @@ public class HubConnectionService : IAsyncDisposable
             if (IsConnected) return;
             await DisposeConnectionAsync();
 
-            var fullUrl = $"{url}?{HubRoutes.Roles.Key}={HubRoutes.Roles.Agent}&pc={Uri.EscapeDataString(_identity.PcName)}&{HubSecurity.QueryKey}={Uri.EscapeDataString(_sharedSecret)}";
-
+            var connectionUrl = HubRoutes.BuildClientUrl(url, HubRoutes.Roles.Agent, _identity.PcName);
             _connection = new HubConnectionBuilder()
-                .WithUrl(fullUrl)
-                .WithAutomaticReconnect()
+                .WithUrl(connectionUrl, options =>
+                {
+                    options.Headers[HubSecurity.HeaderName] = _sharedSecret;
+                    options.HttpMessageHandlerFactory = handler =>
+                    {
+                        if (handler is HttpClientHandler httpHandler)
+                        {
+                            httpHandler.ServerCertificateCustomValidationCallback =
+                                (_, certificate, _, _) => CertificatePin.Matches(certificate, endpoint.CertificateSha256);
+                        }
+                        return handler;
+                    };
+                    options.WebSocketConfiguration = webSocket =>
+                        webSocket.RemoteCertificateValidationCallback =
+                            (_, certificate, _, _) => CertificatePin.Matches(certificate, endpoint.CertificateSha256);
+                })
+                .WithAutomaticReconnect(new[]
+                {
+                    TimeSpan.Zero,
+                    TimeSpan.FromSeconds(2),
+                    TimeSpan.FromSeconds(5),
+                    TimeSpan.FromSeconds(10),
+                })
                 .Build();
 
-            _connection.On<AttentionCommand>(HubRoutes.Methods.ReceiveAttention,
-                cmd => AttentionReceived?.Invoke(this, cmd));
-            _connection.On<ChatMessage>(HubRoutes.Methods.ReceiveChat,
-                msg => ChatReceived?.Invoke(this, msg));
-            _connection.On<PowerCommand>(HubRoutes.Methods.ReceivePowerCommand, cmd =>
-            {
-                _powerService.Execute(cmd);
-                PowerReceived?.Invoke(this, cmd);
-            });
-            _connection.On<CaptureProfileCommand>(HubRoutes.Methods.ReceiveCaptureProfile, cmd =>
-            {
-                _profileState.Current = cmd.Profile;
-                CaptureProfileReceived?.Invoke(this, cmd);
-            });
-            _connection.On<FileDistributionNotice>(HubRoutes.Methods.ReceiveFileNotice, async notice =>
-            {
-                FileNoticeReceived?.Invoke(this, notice);
-                await HandleFileNoticeAsync(notice, CancellationToken.None);
-            });
-            _connection.On<WebFilterPolicy>(HubRoutes.Methods.ReceiveWebFilterPolicy, policy =>
-            {
-                _webFilter.Apply(policy);
-                WebFilterPolicyReceived?.Invoke(this, policy);
-            });
-            _connection.On<AppBlockPolicy>(HubRoutes.Methods.ReceiveAppBlockPolicy, policy =>
-            {
-                _appBlock.UpdatePolicy(policy);
-                AppBlockPolicyReceived?.Invoke(this, policy);
-            });
+            _connection.On<PowerCommand>(
+                HubRoutes.Methods.ReceivePowerCommand,
+                HandlePowerCommandAsync);
+            _connection.On<WebFilterPolicy>(HubRoutes.Methods.ReceiveWebFilterPolicy,
+                policy => _webFilter.Apply(policy));
+            _connection.On<AppBlockPolicy>(HubRoutes.Methods.ReceiveAppBlockPolicy,
+                policy => _appBlock.UpdatePolicy(policy));
 
             await _connection.StartAsync(ct);
             await SendHelloAsync(ct);
-            _logger.LogInformation("Terhubung ke Teacher Hub: {Url}", url);
+            _logger.LogInformation("Student Agent terhubung ke Teacher Hub: {Url}", url);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            await DisposeConnectionAsync();
+            throw;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Gagal connect ke {Url}", url);
+            _logger.LogWarning(ex, "Student Agent gagal terhubung ke {Url}", url);
             await DisposeConnectionAsync();
         }
         finally
@@ -123,64 +120,76 @@ public class HubConnectionService : IAsyncDisposable
         }
     }
 
+    private async Task HandlePowerCommandAsync(PowerCommand command)
+    {
+        CommandExecutionState state;
+        string message;
+        if (!ContractValidation.IsValidPowerCommand(command))
+        {
+            state = CommandExecutionState.Rejected;
+            message = "Perintah power tidak valid atau kedaluwarsa";
+        }
+        else
+        {
+            var outcome = _powerService.Execute(command);
+            state = outcome.Success
+                ? CommandExecutionState.Accepted
+                : CommandExecutionState.Failed;
+            message = outcome.Message;
+        }
+
+        await InvokeIfConnectedAsync(
+            HubRoutes.Methods.ReportCommandResult,
+            CommandResult.Create(
+                command.CommandId,
+                _identity.PcName,
+                RemoteCommandKind.Power,
+                state,
+                message),
+            CancellationToken.None);
+    }
+
     public Task SendHelloAsync(CancellationToken ct) =>
         InvokeIfConnectedAsync(HubRoutes.Methods.Hello, BuildPresence(StudentStatus.Online), ct);
 
     public Task SendHeartbeatAsync(CancellationToken ct) =>
         InvokeIfConnectedAsync(HubRoutes.Methods.Heartbeat, BuildPresence(StudentStatus.Online), ct);
 
-    public Task PushScreenFrameAsync(ScreenFrame frame, CancellationToken ct) =>
-        InvokeIfConnectedAsync(HubRoutes.Methods.PushScreenFrame, frame, ct);
-
-    public Task PushActivityAsync(ActivityRecord record, CancellationToken ct) =>
-        InvokeIfConnectedAsync(HubRoutes.Methods.PushActivityRecord, record, ct);
-
-    public Task ReportFileProgressAsync(FileDistributionProgress p, CancellationToken ct) =>
-        InvokeIfConnectedAsync(HubRoutes.Methods.ReportFileProgress, p, ct);
-
-    public Task SendChatToTeacherAsync(string body, CancellationToken ct)
-    {
-        var msg = new ChatMessage(
-            Guid.NewGuid().ToString("N"),
-            ChatDirection.StudentToTeacher,
-            _identity.PcName,
-            null,
-            body,
-            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-        return InvokeIfConnectedAsync(HubRoutes.Methods.SendChatToTeacher, msg, ct);
-    }
-
-    private async Task HandleFileNoticeAsync(FileDistributionNotice notice, CancellationToken ct)
-    {
-        await ReportFileProgressAsync(new FileDistributionProgress(
-            notice.Id, _identity.PcName, FileDistributionState.Downloading, 0, null,
-            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()), ct);
-
-        var result = await _downloader.DownloadAsync(notice, ct);
-
-        var state = result.Success ? FileDistributionState.Completed : FileDistributionState.Failed;
-        await ReportFileProgressAsync(new FileDistributionProgress(
-            notice.Id, _identity.PcName, state,
-            result.Success ? notice.SizeBytes : 0,
-            result.Error,
-            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()), ct);
-    }
-
     private StudentPresence BuildPresence(StudentStatus status) =>
         StudentPresence.Snapshot(_identity.PcName, _identity.MacAddress, _identity.IpAddress, status);
 
     private async Task InvokeIfConnectedAsync(string method, object payload, CancellationToken ct)
     {
-        if (_connection is null || _connection.State != HubConnectionState.Connected) return;
-        try { await _connection.InvokeAsync(method, payload, ct); }
-        catch (Exception ex) { _logger.LogWarning(ex, "Invoke {Method} gagal", method); }
+        var connection = _connection;
+        if (connection?.State != HubConnectionState.Connected) return;
+
+        try
+        {
+            await connection.InvokeAsync(method, payload, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Invoke {Method} dari Student Agent gagal", method);
+        }
     }
 
     private async Task DisposeConnectionAsync()
     {
-        if (_connection is not null)
+        if (_connection is null) return;
+        try
         {
-            try { await _connection.DisposeAsync(); } catch { }
+            await _connection.DisposeAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Dispose koneksi Student Agent gagal");
+        }
+        finally
+        {
             _connection = null;
         }
     }

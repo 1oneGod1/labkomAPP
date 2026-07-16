@@ -1,12 +1,12 @@
 # Roadmap Clean-Room Feature Parity LabKom
 
-Tanggal baseline: 16 Juli 2026
+Baseline native: 16 Juli 2026
 
 ## Batas implementasi
 
-LabKom akan meniru perilaku dan alur kerja yang terdokumentasi publik, bukan menyalin source code, protokol privat, aset, merek, atau hasil dekompilasi NetSupport School. Installer referensi tidak diperlukan untuk membangun implementasi ini.
+LabKom dibangun ulang sebagai aplikasi Windows native berdasarkan kebutuhan pengelolaan kelas dan perilaku yang terdokumentasi publik. Implementasi tidak menyalin source code, protokol privat, aset, merek, atau hasil dekompilasi NetSupport School.
 
-Referensi perilaku resmi:
+Referensi perilaku publik:
 
 - https://www.netsupportschool.com/features/
 - https://www.netsupportschool.com/new-features/
@@ -14,127 +14,100 @@ Referensi perilaku resmi:
 - https://help.netsupportschool.com/en-windows/Content/Windows/Settings/show_settings.html
 - https://help.netsupportschool.com/en-windows/Content/Windows/Tech-Console/tech_console.html
 
-## Arsitektur target
+## Arsitektur native
 
-### Control plane
+- Teacher Console: WPF, host HTTPS/SignalR, discovery UDP, SQLite, monitoring, dan perintah kelas.
+- Student Agent: Windows Service untuk power dan policy yang membutuhkan hak sistem.
+- Student Desktop: WPF pada sesi pengguna untuk capture monitor, lock/attention, broadcast guru, chat, aktivitas, dan download file.
+- Shared: kontrak, validasi payload, HMAC discovery, routing role/PC, dan certificate pinning.
+- Data: persistence SQLite di sisi Teacher.
 
-- Socket.IO terautentikasi untuk presence, room/kelas, policy, perintah, acknowledgement, chat, dan status fitur.
-- Token admin dan device tetap dipisahkan.
-- Semua target PC dinormalisasi dan diverifikasi server; renderer tidak memilih endpoint arbitrer.
-- Perintah penting memiliki audit log, TTL, acknowledgement, dan status per-PC.
+Control plane memakai SignalR melalui HTTPS. Secret tidak berada di query string. Beacon discovery menandatangani endpoint dan pin sertifikat dengan HMAC-SHA256. Audience dipisahkan menjadi Agent/Desktop serta per-PC.
 
-### Media plane
+Media plane memakai frame JPEG biner, maksimal 1,5 MiB, satu frame in-flight, StreamId, dan SequenceNumber. Frame lama dari koneksi atau urutan sebelumnya ditolak.
 
-- Frame biner JPEG/WebP, bukan data-URI base64 pada pengirim baru.
-- Satu frame in-flight untuk mencegah antrian tanpa batas.
-- Profil Performance, Balanced, dan Quality; kualitas JPEG menyesuaikan latency acknowledgement.
-- Satu upload Admin ke server, kemudian fan-out ke semua PC atau daftar target terpilih.
-- Client 1.0.x mendapat fallback base64 selama masa migrasi.
-- Tahap lanjutan: abstraksi transport agar broadcast LAN multicast atau WebRTC SFU dapat ditambahkan tanpa mengganti UI.
+## Status native v0.2.0
 
-### State dan persistence
+Selesai dan sudah masuk regression test:
 
-- State realtime/ephemeral disimpan di memory dengan TTL.
-- Konfigurasi kelas, policy, hasil tes, audit, inventory, dan histori disimpan persisten.
-- File credential, service account, dan secret tidak pernah masuk repository atau paket installer.
+- Pemisahan Windows Service Session 0 dari proses desktop interaktif.
+- HTTPS dengan sertifikat ephemeral, certificate pinning, discovery HMAC, dan shared secret minimal 32 karakter.
+- Routing per role dan per-PC tanpa broadcast ke proses yang salah.
+- Presence yang aman terhadap reconnect/disconnect terlambat.
+- Thumbnail dan focus capture GDI, inventaris multi-monitor, serta pemilihan monitor dari Teacher.
+- Penolakan frame lama berdasarkan koneksi Desktop, StreamId, dan SequenceNumber.
+- Attention/lock di seluruh virtual desktop, di atas taskbar, dengan blok Win, Alt+Tab, Alt+F4, Alt+Esc, Ctrl+Esc, dan F11.
+- Broadcast layar Teacher ke semua atau satu siswa, pause/resume, late-join state, BroadcastId/sequence, dan frame lama tetap tampil sampai frame baru valid.
+- Chat broadcast Teacher, jendela pesan siswa, balasan siswa, dan feed pesan di Teacher.
+- Distribusi file ke sesi pengguna dengan HTTPS pinning, batas ukuran, validasi nama, ukuran, endpoint, dan SHA-256.
+- Activity window, shutdown/restart, Wake-on-LAN, serta fondasi app/web policy.
+- Command ID/TTL, acknowledgement Attention/Power per-PC, audit SQLite, dan replay Attention setelah Desktop reconnect.
+- Build Release memperlakukan warning sebagai error dan 40 regression test lulus.
 
-## Baseline v1.1.0
+Batas Windows: Ctrl+Alt+Delete adalah secure attention sequence dan tidak dapat diblokir oleh aplikasi user-mode. Mode lock tetap memerlukan policy Windows lab (akun siswa non-admin, Task Manager/fast user switching sesuai kebijakan sekolah) untuk kiosk yang lebih kuat.
 
-Sudah tersedia:
+## Matriks feature parity native
 
-- Discovery server LAN dan device authentication.
-- Presence PC, thumbnail layar siswa, dan mode focus HQ.
-- Broadcast layar instruktur v2: frame biner, target semua/terpilih, backpressure, kualitas adaptif, statistik FPS/latency.
-- Fallback broadcast untuk client 1.0.x.
-- Attention/blank overlay, kiosk lock, chat, aktivitas aplikasi, remote power, Wake-on-LAN, dan screen broadcast dasar.
-- Exit Kepala Lab yang memakai server tersimpan dan tetap tersedia saat Attention Mode.
-
-## Increment v1.2.0
-
-- Monitoring siswa memakai frame JPEG binary dengan acknowledgement dan satu frame in-flight.
-- Overview tetap 480x270/1 FPS; Focus HQ menjadi 1280x720/4 FPS.
-- Client mengirim inventaris monitor dan Admin dapat memilih monitor yang ingin ditampilkan.
-- Server memvalidasi frame/metadata dan menyediakan fallback base64 untuk Admin atau Client lama.
-- Dashboard menampilkan resolusi, latency, jumlah monitor, dan status transport binary.
-
-## Matriks feature parity
-
-| Area | Fitur | Status | Tahap |
-|---|---|---:|---:|
-| Monitor | Thumbnail seluruh kelas | Binary v2 selesai | P1 |
-| Monitor | Focus view kualitas tinggi | Binary 1280x720/4 FPS selesai | P1 |
-| Monitor | Multi-monitor per siswa | Pemilihan monitor selesai | P1 |
+| Area | Fitur | Status native | Tahap |
+|---|---|---|---|
+| Monitor | Thumbnail seluruh kelas | Selesai, GDI binary | P1 |
+| Monitor | Focus view kualitas tinggi | Selesai, 1280x720/4 FPS | P1 |
+| Monitor | Multi-monitor per siswa | Inventaris dan pemilihan selesai | P1 |
+| Monitor | DXGI/adaptive quality/telemetry | Belum | P1 |
 | Monitor | Remote view/control individual | Belum | P1 |
-| Instruct | Show layar instruktur ke semua/terpilih | v2 selesai | P0 |
+| Instruct | Show layar instruktur ke semua/terpilih | Selesai | P0/P1 |
+| Instruct | Pause/resume dan late-join state | Selesai | P1 |
+| Instruct | Target group tersimpan | Belum | P2 |
 | Instruct | Show satu siswa ke siswa lain | Belum | P1 |
-| Instruct | Pause/resume dan late join | Sebagian (late join server) | P1 |
-| Instruct | Annotation dan laser pointer | Belum | P1 |
-| Instruct | Whiteboard kolaboratif | Belum | P2 |
-| Instruct | Show aplikasi/video/audio | Belum | P2 |
-| Control | Lock/blank screen | Ada | P0 |
+| Instruct | Pointer, annotation, snapshot | Belum | P1 |
+| Instruct | Whiteboard, aplikasi, video, audio | Belum | P2 |
+| Control | Lock/blank screen | Fondasi native selesai | P0 |
+| Control | Command ack dan recovery reconnect | Selesai untuk Attention/Power | P1 |
+| Control | Recovery setelah Teacher restart | Belum | P1 |
 | Control | Quick launch aplikasi/file/URL | Sebagian | P2 |
-| Control | Allow/block aplikasi dan website | Sebagian | P2 |
-| Control | Mute audio/volume | Belum | P2 |
-| Control | Print/USB/clipboard policy | Belum | P3 |
-| Interaction | Chat dan broadcast message | Ada | P0 |
-| Interaction | Help request per siswa | Belum | P2 |
-| Interaction | Feedback/survey cepat | Belum | P2 |
-| Assessment | Test text/gambar/audio/video | Belum | P3 |
-| Content | Distribusi dan pengumpulan file | Fondasi .NET ada | P2 |
-| Content | Student journal/replay | Belum | P3 |
+| Control | Allow/block aplikasi dan website | Fondasi Agent ada | P2 |
+| Control | Audio, print, USB, clipboard policy | Belum | P2/P3 |
+| Interaction | Broadcast chat dan balasan siswa | Selesai | P0 |
+| Interaction | Help request, feedback, survey | Belum | P2 |
+| Content | Distribusi file | Fondasi download selesai | P2 |
+| Content | Pengumpulan file dan conflict handling | Belum | P2 |
+| Classroom | Login siswa, room, group, layout | Belum | P2 |
+| Assessment | Test builder, hasil, reporting | Belum | P3 |
 | Technician | Inventory hardware/software | Belum | P3 |
 | Technician | Process/service manager | Belum | P3 |
-| Technician | Security policy/compliance | Belum | P4 |
-| Classroom | Room, group, saved layout/profile | Belum | P2 |
-| Deployment | MSI/GPO deployment dan signed update | Belum | P4 |
+| Deployment | MSI/GPO, provisioning, signing, update | Belum | P4 |
 
-## Tahapan implementasi
+## Tahapan berikutnya
 
-### P0 — Media foundation
+### P1 - Monitoring dan demonstrasi
 
-- Transport broadcast v2, compatibility fallback, target selection, quality profiles, telemetry.
-- Regression contract Admin–Server–Client.
-- Paket Admin dan Client 1.1.0.
+- DXGI Desktop Duplication dengan fallback GDI.
+- Adaptive FPS/quality dan telemetry latency/drop.
+- Target broadcast ke group tersimpan.
+- Exhibit layar siswa, pointer, annotation, snapshot.
+- Remote control dengan policy sekolah, audit, dan emergency stop.
 
-### P1 — Monitoring dan demonstrasi
+### P2 - Workflow kelas
 
-- Binary client-to-admin untuk grid/focus.
-- Pemilihan monitor siswa.
-- View/control individual dengan consent dan audit.
-- Exhibit: tampilkan layar siswa terpilih ke kelas.
-- Pause/resume, pointer, annotation, dan snapshot.
+- Login siswa, sesi, room/group, dan layout tersimpan.
+- Help request, feedback/survey, quick launch, serta policy aplikasi/web/audio dengan acknowledgement.
+- Distribusi dan pengumpulan file dengan progress, retry, serta conflict handling.
 
-### P2 — Classroom workflow
+### P3 - Assessment dan technician
 
-- Room/group dan layout kelas tersimpan.
-- Quick launch aplikasi, file, URL.
-- Policy aplikasi/website, audio control.
-- Help request, feedback, survey, whiteboard.
-- File distribute/collect dengan progress dan checksum.
-
-### P3 — Assessment dan technician tools
-
-- Test builder dan result dashboard.
-- Inventory hardware/software.
-- Process/service/task manager terkontrol.
+- Test builder, hasil, reporting, inventory, process/service manager, journal, dan replay.
 - Print, USB, clipboard, dan device policy.
-- Journal, replay, dan lesson plan.
 
-### P4 — Enterprise deployment
+### P4 - Deployment enterprise
 
-- MSI/GPO/Intune deployment.
-- Code signing, signed update manifest, rollback.
-- Role-based access, multi-admin audit, security policy baseline.
-- Optional gateway untuk lintas subnet.
+- MSI/WiX untuk Teacher dan Student, secret/key provisioning, upgrade/rollback.
+- Code signing, signed update manifest, RBAC admin, audit append-only, backup.
+- Uji beban 40 PC, soak test satu hari sekolah, GPO/Intune guidance.
 
-## Anggaran performa P0/P1
+## Gate penghapusan legacy
 
-- Overview: 480x270, 1 FPS per siswa, target maksimal 40 PC per server lab.
-- Focus: 1280x720 atau lebih, target 4–8 FPS adaptif.
-- Broadcast instruktur Balanced: 1600x900, target 10 FPS, median latency LAN di bawah 250 ms.
-- Maksimum satu frame in-flight per publisher dan maksimum frame 1.5 MiB.
-- Tidak ada antrian frame lama; frame boleh dilewati saat jaringan lambat.
+Folder Electron/Node lama tidak dihapus sebelum P0/P1 native lulus uji pada beberapa PC/VM Windows dan installer native memiliki rollback. Setelah gate terpenuhi, legacy dipindahkan ke tag arsip dan dikeluarkan dari paket utama.
 
-## Kriteria selesai
+## Kriteria selesai fitur
 
-Setiap fitur wajib memiliki autentikasi/otorisasi, target yang eksplisit, acknowledgement, cleanup saat disconnect, fallback yang terdokumentasi, tes kontrak, build produksi, dan skenario recovery sebelum masuk installer rilis.
+Setiap fitur harus memiliki autentikasi/otorisasi, target eksplisit, validasi input, acknowledgement atau hasil eksekusi, cleanup disconnect, recovery, tes otomatis, build produksi, serta uji lapangan sebelum diberi status selesai.

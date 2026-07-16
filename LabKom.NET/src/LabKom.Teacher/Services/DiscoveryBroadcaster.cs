@@ -18,12 +18,14 @@ public class DiscoveryBroadcaster : BackgroundService
 {
     private readonly ILogger<DiscoveryBroadcaster> _logger;
     private readonly IConfiguration _config;
+    private readonly TeacherCertificateProvider _certificate;
     private readonly string _teacherId = Environment.MachineName + "-" + Guid.NewGuid().ToString("N")[..8];
 
-    public DiscoveryBroadcaster(ILogger<DiscoveryBroadcaster> logger, IConfiguration config)
+    public DiscoveryBroadcaster(ILogger<DiscoveryBroadcaster> logger, IConfiguration config, TeacherCertificateProvider certificate)
     {
         _logger = logger;
         _config = config;
+        _certificate = certificate;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -31,6 +33,14 @@ public class DiscoveryBroadcaster : BackgroundService
         var interval = TimeSpan.FromSeconds(_config.GetValue("Teacher:DiscoveryBroadcastIntervalSeconds", 2));
         var hubPort = _config.GetValue("Teacher:HubPort", 41235);
         var teacherName = _config.GetValue("Teacher:Name", "LabKom Teacher")!;
+        var sharedSecret = Environment.GetEnvironmentVariable("LABKOM_SHARED_SECRET")
+                           ?? _config["Teacher:SharedSecret"]
+                           ?? string.Empty;
+        if (!LabKom.Shared.Hub.HubSecurity.IsStrongSecret(sharedSecret))
+        {
+            _logger.LogError("Discovery tidak dijalankan: shared secret wajib minimal {Length} karakter.", LabKom.Shared.Hub.HubSecurity.MinimumSecretLength);
+            return;
+        }
 
         using var udp = new UdpClient { EnableBroadcast = true };
         var endpoint = new IPEndPoint(IPAddress.Broadcast, DiscoveryProtocol.Port);
@@ -43,7 +53,7 @@ public class DiscoveryBroadcaster : BackgroundService
             {
                 foreach (var ip in GetLanIpAddresses())
                 {
-                    var beacon = DiscoveryBeacon.Create(_teacherId, teacherName, ip, hubPort);
+                    var beacon = DiscoveryBeacon.CreateSigned(_teacherId, teacherName, ip, hubPort, _certificate.Sha256Pin, sharedSecret);
                     var json = JsonSerializer.Serialize(beacon);
                     var bytes = Encoding.UTF8.GetBytes(json);
                     await udp.SendAsync(bytes, bytes.Length, endpoint);

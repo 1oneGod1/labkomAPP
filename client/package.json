@@ -1,6 +1,6 @@
 {
   "name": "labkom-client",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Aplikasi klien manajemen lab komputer - PC Siswa",
   "author": "LabKom",
   "main": "electron/main.js",

@@ -12,146 +12,301 @@ using Microsoft.Extensions.Logging;
 namespace LabKom.Teacher.Services;
 
 /// <summary>
-/// Saat aktif: capture layar guru periodik (5 fps) lalu push frame
-/// ke semua overlay client. Saat berhenti: kirim sinyal supaya overlay
-/// menyembunyikan window broadcast.
+/// Teacher screen publisher with explicit audience, pause/resume, one frame
+/// in-flight, and per-broadcast sequence identity.
 /// </summary>
 [SupportedOSPlatform("windows")]
-public class TeacherScreenBroadcaster : IDisposable
+public sealed class TeacherScreenBroadcaster : IDisposable
 {
-    private readonly HubContextHolder _hub;
-    private readonly ILogger<TeacherScreenBroadcaster> _logger;
-    private readonly ImageCodecInfo _jpegCodec;
-
-    private CancellationTokenSource? _cts;
-    private Task? _loopTask;
     private const int TargetWidth = 1280;
     private const int TargetHeight = 720;
     private const int IntervalMs = 200;
     private const int JpegQuality = 65;
 
-    [DllImport("user32.dll")] private static extern int GetSystemMetrics(int nIndex);
+    private readonly HubContextHolder _hub;
+    private readonly ILogger<TeacherScreenBroadcaster> _logger;
+    private readonly ImageCodecInfo _jpegCodec;
+    private readonly SemaphoreSlim _stateGate = new(1, 1);
 
-    public bool IsActive { get; private set; }
-    public event EventHandler<bool>? ActiveChanged;
+    private CancellationTokenSource? _cancellation;
+    private Task? _loopTask;
+    private string _broadcastId = string.Empty;
+    private string? _targetPcName;
+    private long _sequenceNumber;
+    private bool _isActive;
+    private bool _isPaused;
 
-    public TeacherScreenBroadcaster(HubContextHolder hub, ILogger<TeacherScreenBroadcaster> logger)
+    [DllImport("user32.dll")]
+    private static extern int GetSystemMetrics(int index);
+
+    public TeacherScreenBroadcaster(
+        HubContextHolder hub,
+        ILogger<TeacherScreenBroadcaster> logger)
     {
         _hub = hub;
         _logger = logger;
-        _jpegCodec = ImageCodecInfo.GetImageEncoders().First(c => c.FormatID == ImageFormat.Jpeg.Guid);
+        _jpegCodec = ImageCodecInfo.GetImageEncoders()
+            .First(codec => codec.FormatID == ImageFormat.Jpeg.Guid);
     }
 
-    public async Task StartAsync()
+    public bool IsActive => Volatile.Read(ref _isActive);
+    public bool IsPaused => Volatile.Read(ref _isPaused);
+    public string? TargetPcName => _targetPcName;
+
+    public event EventHandler? StateChanged;
+
+    public TeacherBroadcastSignal? BuildReplayFor(string pcName)
     {
-        if (IsActive) return;
-        IsActive = true;
-        ActiveChanged?.Invoke(this, true);
+        if (!IsActive
+            || (_targetPcName is not null
+                && !string.Equals(_targetPcName, pcName, StringComparison.OrdinalIgnoreCase)))
+        {
+            return null;
+        }
 
-        await SendSignalAsync(active: true);
+        return new TeacherBroadcastSignal(_broadcastId, true, IsPaused);
+    }
 
-        _cts = new CancellationTokenSource();
-        var token = _cts.Token;
-        _loopTask = Task.Run(() => CaptureLoop(token), token);
-        _logger.LogInformation("Teacher broadcast dimulai");
+    public async Task StartAsync(string? targetPcName = null)
+    {
+        if (targetPcName is not null && !HubSecurity.IsValidPcName(targetPcName))
+        {
+            throw new ArgumentException("Target PC broadcast tidak valid.", nameof(targetPcName));
+        }
+
+        await _stateGate.WaitAsync();
+        try
+        {
+            if (_isActive) return;
+
+            _broadcastId = Guid.NewGuid().ToString("N");
+            _targetPcName = targetPcName;
+            _sequenceNumber = 0;
+            Volatile.Write(ref _isPaused, false);
+            Volatile.Write(ref _isActive, true);
+
+            await SendSignalAsync(
+                _broadcastId,
+                _targetPcName,
+                active: true,
+                paused: false);
+
+            _cancellation = new CancellationTokenSource();
+            var token = _cancellation.Token;
+            _loopTask = Task.Run(() => CaptureLoopAsync(token), token);
+            RaiseStateChanged();
+
+            _logger.LogInformation(
+                "Teacher broadcast {BroadcastId} dimulai untuk {Target}",
+                _broadcastId,
+                _targetPcName ?? "semua Desktop");
+        }
+        finally
+        {
+            _stateGate.Release();
+        }
+    }
+
+    public async Task TogglePauseAsync()
+    {
+        await _stateGate.WaitAsync();
+        try
+        {
+            if (!_isActive) return;
+
+            var paused = !_isPaused;
+            Volatile.Write(ref _isPaused, paused);
+            await SendSignalAsync(
+                _broadcastId,
+                _targetPcName,
+                active: true,
+                paused);
+            RaiseStateChanged();
+        }
+        finally
+        {
+            _stateGate.Release();
+        }
     }
 
     public async Task StopAsync()
     {
-        if (!IsActive) return;
-        IsActive = false;
-        ActiveChanged?.Invoke(this, false);
+        await _stateGate.WaitAsync();
+        try
+        {
+            if (!_isActive) return;
 
-        _cts?.Cancel();
-        try { if (_loopTask is not null) await _loopTask; } catch { }
-        _cts?.Dispose();
-        _cts = null;
-        _loopTask = null;
+            _cancellation?.Cancel();
+            try
+            {
+                if (_loopTask is not null) await _loopTask;
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected during stop.
+            }
 
-        await SendSignalAsync(active: false);
-        _logger.LogInformation("Teacher broadcast dihentikan");
+            await SendSignalAsync(
+                _broadcastId,
+                _targetPcName,
+                active: false,
+                paused: false);
+
+            _cancellation?.Dispose();
+            _cancellation = null;
+            _loopTask = null;
+            Volatile.Write(ref _isPaused, false);
+            Volatile.Write(ref _isActive, false);
+            RaiseStateChanged();
+
+            _logger.LogInformation(
+                "Teacher broadcast {BroadcastId} dihentikan",
+                _broadcastId);
+        }
+        finally
+        {
+            _stateGate.Release();
+        }
     }
 
-    private async Task CaptureLoop(CancellationToken token)
+    private async Task CaptureLoopAsync(CancellationToken cancellationToken)
     {
-        while (!token.IsCancellationRequested)
+        while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
-                var frame = CaptureFrame();
+                if (_isPaused)
+                {
+                    await Task.Delay(100, cancellationToken);
+                    continue;
+                }
+
+                var sequence = Interlocked.Increment(ref _sequenceNumber);
+                var frame = CaptureFrame(_broadcastId, sequence);
                 if (frame is not null)
                 {
-                    await SendFrameAsync(frame);
+                    await SendFrameAsync(frame, _targetPcName, cancellationToken);
                 }
-                await Task.Delay(IntervalMs, token);
+
+                await Task.Delay(IntervalMs, cancellationToken);
             }
-            catch (OperationCanceledException) { break; }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Capture loop guru error");
-                await Task.Delay(500, token);
+                _logger.LogWarning(ex, "Teacher capture loop error");
+                await Task.Delay(500, cancellationToken);
             }
         }
     }
 
-    private TeacherFrame? CaptureFrame()
+    private TeacherFrame? CaptureFrame(string broadcastId, long sequenceNumber)
     {
         try
         {
-            var w = GetSystemMetrics(0);
-            var h = GetSystemMetrics(1);
-            if (w <= 0 || h <= 0) return null;
+            var width = GetSystemMetrics(0);
+            var height = GetSystemMetrics(1);
+            if (width <= 0 || height <= 0) return null;
 
-            using var src = new Bitmap(w, h, PixelFormat.Format32bppArgb);
-            using (var g = Graphics.FromImage(src))
+            using var source = new Bitmap(width, height, PixelFormat.Format32bppArgb);
+            using (var graphics = Graphics.FromImage(source))
             {
-                g.CopyFromScreen(0, 0, 0, 0, new Size(w, h), CopyPixelOperation.SourceCopy);
+                graphics.CopyFromScreen(
+                    0,
+                    0,
+                    0,
+                    0,
+                    new Size(width, height),
+                    CopyPixelOperation.SourceCopy);
             }
 
-            var ratio = Math.Min((double)TargetWidth / w, (double)TargetHeight / h);
-            var dw = Math.Max(1, (int)(w * ratio));
-            var dh = Math.Max(1, (int)(h * ratio));
+            var ratio = Math.Min(
+                (double)TargetWidth / width,
+                (double)TargetHeight / height);
+            var destinationWidth = Math.Max(1, (int)(width * ratio));
+            var destinationHeight = Math.Max(1, (int)(height * ratio));
 
-            using var dst = new Bitmap(dw, dh, PixelFormat.Format24bppRgb);
-            using (var g = Graphics.FromImage(dst))
+            using var destination = new Bitmap(
+                destinationWidth,
+                destinationHeight,
+                PixelFormat.Format24bppRgb);
+            using (var graphics = Graphics.FromImage(destination))
             {
-                g.InterpolationMode = InterpolationMode.HighQualityBilinear;
-                g.DrawImage(src, 0, 0, dw, dh);
+                graphics.InterpolationMode = InterpolationMode.HighQualityBilinear;
+                graphics.DrawImage(source, 0, 0, destinationWidth, destinationHeight);
             }
 
-            using var ms = new MemoryStream();
-            var ep = new EncoderParameters(1);
-            ep.Param[0] = new EncoderParameter(Encoder.Quality, (long)JpegQuality);
-            dst.Save(ms, _jpegCodec, ep);
+            using var output = new MemoryStream();
+            using var parameters = new EncoderParameters(1);
+            parameters.Param[0] = new EncoderParameter(Encoder.Quality, (long)JpegQuality);
+            destination.Save(output, _jpegCodec, parameters);
 
-            return TeacherFrame.Create(dw, dh, ms.ToArray());
+            return TeacherFrame.Create(
+                broadcastId,
+                sequenceNumber,
+                destinationWidth,
+                destinationHeight,
+                output.ToArray());
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "CaptureFrame guru gagal");
+            _logger.LogWarning(ex, "Teacher screen capture gagal");
             return null;
         }
     }
 
-    private Task SendFrameAsync(TeacherFrame frame)
+    private Task SendFrameAsync(
+        TeacherFrame frame,
+        string? targetPcName,
+        CancellationToken cancellationToken)
     {
         var hub = _hub.HubContext;
         if (hub is null) return Task.CompletedTask;
-        return hub.Clients.All.SendAsync(HubRoutes.Methods.ReceiveTeacherFrame, frame);
+
+        return Audience(hub, targetPcName).SendAsync(
+            HubRoutes.Methods.ReceiveTeacherFrame,
+            frame,
+            cancellationToken);
     }
 
-    private Task SendSignalAsync(bool active)
+    private Task SendSignalAsync(
+        string broadcastId,
+        string? targetPcName,
+        bool active,
+        bool paused)
     {
         var hub = _hub.HubContext;
         if (hub is null) return Task.CompletedTask;
-        return hub.Clients.All.SendAsync(
+
+        return Audience(hub, targetPcName).SendAsync(
             HubRoutes.Methods.ReceiveTeacherBroadcastSignal,
-            new TeacherBroadcastSignal(active));
+            new TeacherBroadcastSignal(broadcastId, active, paused));
     }
+
+    private static IClientProxy Audience(
+        IHubContext<LabKom.Teacher.Hub.TeacherHub> hub,
+        string? targetPcName) =>
+        targetPcName is null
+            ? hub.Clients.Group(HubRoutes.Groups.ForRole(HubRoutes.Roles.Desktop))
+            : hub.Clients.Group(
+                HubRoutes.Groups.ForPcRole(targetPcName, HubRoutes.Roles.Desktop));
+
+    private void RaiseStateChanged() => StateChanged?.Invoke(this, EventArgs.Empty);
 
     public void Dispose()
     {
-        try { _cts?.Cancel(); } catch { }
-        _cts?.Dispose();
+        try
+        {
+            _cancellation?.Cancel();
+        }
+        catch
+        {
+            // Best effort during process exit.
+        }
+
+        _cancellation?.Dispose();
+        _stateGate.Dispose();
     }
 }
