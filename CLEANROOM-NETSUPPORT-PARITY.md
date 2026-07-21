@@ -26,7 +26,7 @@ Control plane memakai SignalR melalui HTTPS. Secret tidak berada di query string
 
 Media plane memakai frame JPEG biner, maksimal 1,5 MiB, satu frame in-flight, StreamId, dan SequenceNumber. Frame lama dari koneksi atau urutan sebelumnya ditolak.
 
-## Status native v0.2.0
+## Status native v0.4.0
 
 Selesai dan sudah masuk regression test:
 
@@ -39,10 +39,12 @@ Selesai dan sudah masuk regression test:
 - Attention/lock di seluruh virtual desktop, di atas taskbar, dengan blok Win, Alt+Tab, Alt+F4, Alt+Esc, Ctrl+Esc, dan F11.
 - Broadcast layar Teacher ke semua atau satu siswa, pause/resume, late-join state, BroadcastId/sequence, dan frame lama tetap tampil sampai frame baru valid.
 - Chat broadcast Teacher, jendela pesan siswa, balasan siswa, dan feed pesan di Teacher.
-- Distribusi file ke sesi pengguna dengan HTTPS pinning, batas ukuran, validasi nama, ukuran, endpoint, dan SHA-256.
-- Activity window, shutdown/restart, Wake-on-LAN, serta fondasi app/web policy.
-- Command ID/TTL, acknowledgement Attention/Power per-PC, audit SQLite, dan replay Attention setelah Desktop reconnect.
-- Build Release memperlakukan warning sebagai error dan 40 regression test lulus.
+- Distribusi file ke sesi pengguna dengan HTTPS pinning, validasi ukuran/endpoint/SHA-256, progress byte, tiga percobaan download, penamaan konflik file/folder aman, serta cleanup share/partial lama.
+- Menu Teacher File/Edit/View/Siswa/Kelas/Tools/Bantuan, filter/cari PC, multi-select Ctrl+klik, grup kelas tersimpan, chat privat/grup, logoff, konfirmasi power, dan activity window.
+- Command ID/TTL, acknowledgement Attention/Power per-PC, audit SQLite, serta snapshot atomik yang membersihkan state lock/broadcast lama setelah Desktop reconnect atau Teacher restart.
+- Blacklist situs via hosts dan blokir proses aplikasi dengan validasi, command ID/TTL, acknowledgement, serta replay saat Agent reconnect.
+- Build Release memperlakukan warning sebagai error dan 54 regression test lulus.
+- Auto-reconnect SignalR tidak lagi diputus worker, dan audit SQLite diserialisasi melalui bounded queue dengan retry.
 
 Batas Windows: Ctrl+Alt+Delete adalah secure attention sequence dan tidak dapat diblokir oleh aplikasi user-mode. Mode lock tetap memerlukan policy Windows lab (akun siswa non-admin, Task Manager/fast user switching sesuai kebijakan sekolah) untuk kiosk yang lebih kuat.
 
@@ -57,21 +59,21 @@ Batas Windows: Ctrl+Alt+Delete adalah secure attention sequence dan tidak dapat 
 | Monitor | Remote view/control individual | Belum | P1 |
 | Instruct | Show layar instruktur ke semua/terpilih | Selesai | P0/P1 |
 | Instruct | Pause/resume dan late-join state | Selesai | P1 |
-| Instruct | Target group tersimpan | Belum | P2 |
+| Instruct | Target group tersimpan | Selesai untuk broadcast dan aksi kelas | P2 |
 | Instruct | Show satu siswa ke siswa lain | Belum | P1 |
 | Instruct | Pointer, annotation, snapshot | Belum | P1 |
 | Instruct | Whiteboard, aplikasi, video, audio | Belum | P2 |
 | Control | Lock/blank screen | Fondasi native selesai | P0 |
 | Control | Command ack dan recovery reconnect | Selesai untuk Attention/Power | P1 |
-| Control | Recovery setelah Teacher restart | Belum | P1 |
+| Control | Recovery setelah Teacher restart | Selesai melalui snapshot state saat reconnect | P1 |
 | Control | Quick launch aplikasi/file/URL | Sebagian | P2 |
-| Control | Allow/block aplikasi dan website | Fondasi Agent ada | P2 |
+| Control | Allow/block aplikasi dan website | Blacklist situs dan blokir proses selesai; whitelist/proxy belum | P2 |
 | Control | Audio, print, USB, clipboard policy | Belum | P2/P3 |
 | Interaction | Broadcast chat dan balasan siswa | Selesai | P0 |
 | Interaction | Help request, feedback, survey | Belum | P2 |
-| Content | Distribusi file | Fondasi download selesai | P2 |
-| Content | Pengumpulan file dan conflict handling | Belum | P2 |
-| Classroom | Login siswa, room, group, layout | Belum | P2 |
+| Content | Distribusi file | Download, progress, integrity, dan conflict-safe selesai | P2 |
+| Content | Pengumpulan file dan conflict handling | Pengumpulan belum; konflik download selesai | P2 |
+| Classroom | Login siswa, room, group, layout | Grup tersimpan selesai; login/room/layout belum | P2 |
 | Assessment | Test builder, hasil, reporting | Belum | P3 |
 | Technician | Inventory hardware/software | Belum | P3 |
 | Technician | Process/service manager | Belum | P3 |
@@ -83,13 +85,13 @@ Batas Windows: Ctrl+Alt+Delete adalah secure attention sequence dan tidak dapat 
 
 - DXGI Desktop Duplication dengan fallback GDI.
 - Adaptive FPS/quality dan telemetry latency/drop.
-- Target broadcast ke group tersimpan.
+- Telemetry audience dan optimasi broadcast grup pada 40 PC.
 - Exhibit layar siswa, pointer, annotation, snapshot.
 - Remote control dengan policy sekolah, audit, dan emergency stop.
 
 ### P2 - Workflow kelas
 
-- Login siswa, sesi, room/group, dan layout tersimpan.
+- Login siswa, sesi, room, dan layout tersimpan; grup dasar sudah selesai.
 - Help request, feedback/survey, quick launch, serta policy aplikasi/web/audio dengan acknowledgement.
 - Distribusi dan pengumpulan file dengan progress, retry, serta conflict handling.
 

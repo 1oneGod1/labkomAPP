@@ -11,7 +11,7 @@ namespace LabKom.Student.Desktop.Services.Capture;
 
 /// <summary>
 /// GDI BitBlt capture untuk seluruh monitor Windows. Implementasi ini menjadi
-/// fallback kompatibel sampai DXGI Desktop Duplication tersedia.
+/// fallback kompatibel saat DXGI Desktop Duplication tidak tersedia.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class GdiScreenCapture : IScreenCaptureSource
@@ -168,7 +168,11 @@ public sealed class GdiScreenCapture : IScreenCaptureSource
                 resized.Width,
                 resized.Height,
                 output.ToArray(),
-                sequenceNumber);
+                sequenceNumber) with
+            {
+                CaptureBackend = ScreenCaptureBackend.Gdi,
+                JpegQuality = Math.Clamp(jpegQuality, 30, 95),
+            };
         }
         catch (Exception ex)
         {

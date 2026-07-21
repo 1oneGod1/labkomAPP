@@ -1,0 +1,68 @@
+<Window x:Class="LabKom.Teacher.TechnicianConsoleWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="LabKom Technician Console"
+        Width="1180" Height="720"
+        MinWidth="920" MinHeight="560"
+        WindowStartupLocation="CenterOwner"
+        Background="#0F172A" Foreground="#E2E8F0">
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel>
+                <TextBlock Text="Technician Console"
+                           FontSize="24" FontWeight="SemiBold" />
+                <TextBlock Text="Diagnostik perangkat; tanpa remote shell atau arbitrary command."
+                           Foreground="#94A3B8" Margin="0,4,0,0" />
+            </StackPanel>
+            <Button Grid.Column="1" Content="Refresh"
+                    Padding="16,8" Click="Refresh_Click" />
+        </Grid>
+
+        <Border Grid.Row="1" Margin="0,16,0,12" Padding="13"
+                Background="#1E293B" CornerRadius="7">
+            <TextBlock x:Name="SummaryText"
+                       Foreground="#93C5FD"
+                       TextWrapping="Wrap" />
+        </Border>
+
+        <DataGrid Grid.Row="2" x:Name="DeviceGrid"
+                  AutoGenerateColumns="False"
+                  IsReadOnly="True"
+                  SelectionMode="Single">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="PC" Binding="{Binding PcName}" Width="150" />
+                <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="95" />
+                <DataGridCheckBoxColumn Header="Agent" Binding="{Binding AgentConnected}" Width="70" />
+                <DataGridCheckBoxColumn Header="Desktop" Binding="{Binding DesktopConnected}" Width="75" />
+                <DataGridTextColumn Header="Last seen (UTC)" Binding="{Binding LastSeenUtc}" Width="170" />
+                <DataGridTextColumn Header="Health" Binding="{Binding Health}" Width="105" />
+                <DataGridTextColumn Header="CPU %" Binding="{Binding CpuPercent, StringFormat=F1}" Width="80" />
+                <DataGridTextColumn Header="RAM %" Binding="{Binding MemoryPercent, StringFormat=F1}" Width="80" />
+                <DataGridTextColumn Header="Latency" Binding="{Binding LatencyMs, StringFormat=F0}" Width="85" />
+                <DataGridTextColumn Header="Capture" Binding="{Binding CaptureBackend}" Width="110" />
+                <DataGridTextColumn Header="Monitor" Binding="{Binding MonitorCount}" Width="75" />
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <StackPanel Grid.Row="3" Orientation="Horizontal"
+                    HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button Content="Export CSV..." Padding="14,8"
+                    Margin="0,0,8,0" Click="Export_Click" />
+            <Button Content="Refresh Stream PC" Padding="14,8"
+                    Margin="0,0,8,0" Click="RefreshStream_Click" />
+            <Button Content="Emergency Unlock PC" Padding="14,8"
+                    Background="#7F1D1D" Foreground="White"
+                    Click="EmergencyUnlock_Click" />
+        </StackPanel>
+    </Grid>
+</Window>

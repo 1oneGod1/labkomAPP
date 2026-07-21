@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using LabKom.Shared.Contracts;
 using LabKom.Shared.Devices;
 using LabKom.Student.Desktop.Services;
@@ -20,6 +21,7 @@ public sealed class ScreenStreamWorker : BackgroundService
     private readonly DesktopHubClient _hub;
     private readonly MachineIdentity _identity;
     private readonly CaptureProfileState _profileState;
+    private readonly AdaptiveStreamController _adaptive;
     private readonly ILogger<ScreenStreamWorker> _logger;
 
     private readonly int _thumbnailWidth;
@@ -30,6 +32,9 @@ public sealed class ScreenStreamWorker : BackgroundService
     private readonly int _focusHeight;
     private readonly int _focusInterval;
     private readonly int _focusQuality;
+    private readonly int _thumbnailMaximumKbps;
+    private readonly int _focusMaximumKbps;
+    private int _previousSendMilliseconds;
 
     private DateTimeOffset _nextInventoryUtc = DateTimeOffset.MinValue;
     private string _lastInventoryFingerprint = string.Empty;
@@ -41,6 +46,7 @@ public sealed class ScreenStreamWorker : BackgroundService
         MachineIdentity identity,
         CaptureProfileState profileState,
         IConfiguration config,
+        AdaptiveStreamController adaptive,
         ILogger<ScreenStreamWorker> logger)
     {
         _capture = capture;
@@ -48,6 +54,7 @@ public sealed class ScreenStreamWorker : BackgroundService
         _identity = identity;
         _profileState = profileState;
         _logger = logger;
+        _adaptive = adaptive;
 
         _thumbnailWidth = BoundedDimension(config.GetValue("Capture:ThumbnailWidth", 480));
         _thumbnailHeight = BoundedDimension(config.GetValue("Capture:ThumbnailHeight", 270));
@@ -58,6 +65,8 @@ public sealed class ScreenStreamWorker : BackgroundService
         _focusHeight = BoundedDimension(config.GetValue("Capture:FocusHeight", 720));
         _focusInterval = Math.Clamp(config.GetValue("Capture:FocusIntervalMs", 250), 100, 60_000);
         _focusQuality = Math.Clamp(config.GetValue("Capture:FocusJpegQuality", 70), 30, 95);
+        _thumbnailMaximumKbps = Math.Clamp(config.GetValue("Capture:ThumbnailMaximumKbps", 750), 64, 100_000);
+        _focusMaximumKbps = Math.Clamp(config.GetValue("Capture:FocusMaximumKbps", 4_000), 64, 100_000);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -75,26 +84,73 @@ public sealed class ScreenStreamWorker : BackgroundService
 
                 await PublishMonitorInventoryIfNeededAsync(stoppingToken);
 
+                var loopStopwatch = Stopwatch.StartNew();
                 var selection = _profileState.Current;
-                var (width, height, interval, quality) = selection.Profile == CaptureProfile.Focus
-                    ? (_focusWidth, _focusHeight, _focusInterval, _focusQuality)
-                    : (_thumbnailWidth, _thumbnailHeight, _thumbnailInterval, _thumbnailQuality);
+                var (width, height, interval, quality, maximumKbps) =
+                    selection.Profile == CaptureProfile.Focus
+                        ? (
+                            _focusWidth,
+                            _focusHeight,
+                            _focusInterval,
+                            _focusQuality,
+                            _focusMaximumKbps)
+                        : (
+                            _thumbnailWidth,
+                            _thumbnailHeight,
+                            _thumbnailInterval,
+                            _thumbnailQuality,
+                            _thumbnailMaximumKbps);
+                var plan = _adaptive.GetPlan(
+                    selection.Profile,
+                    width,
+                    height,
+                    interval,
+                    quality);
 
                 var sequence = Interlocked.Increment(ref _sequenceNumber);
+                var captureStopwatch = Stopwatch.StartNew();
                 var frame = _capture.CaptureFrame(
                     _identity.PcName,
                     selection.Profile,
                     selection.MonitorId,
-                    width,
-                    height,
-                    quality,
+                    plan.Width,
+                    plan.Height,
+                    plan.JpegQuality,
                     sequence);
+                captureStopwatch.Stop();
                 if (frame is not null)
                 {
-                    await _hub.PushScreenFrameAsync(frame, stoppingToken);
+                    var captureMilliseconds = (int)Math.Clamp(
+                        captureStopwatch.Elapsed.TotalMilliseconds,
+                        0,
+                        60_000);
+                    frame = frame with
+                    {
+                        JpegQuality = plan.JpegQuality,
+                        TargetFramesPerSecond = plan.TargetFramesPerSecond,
+                        CaptureDurationMilliseconds = captureMilliseconds,
+                        PreviousSendDurationMilliseconds = _previousSendMilliseconds,
+                    };
+                    var sendMilliseconds = await _hub.PushScreenFrameMeasuredAsync(
+                        frame,
+                        stoppingToken);
+                    _adaptive.Observe(
+                        selection.Profile,
+                        frame.JpegData.Length,
+                        captureMilliseconds,
+                        sendMilliseconds ?? 60_000,
+                        sendMilliseconds.HasValue,
+                        maximumKbps,
+                        plan);
+                    _previousSendMilliseconds = sendMilliseconds ?? 60_000;
                 }
 
-                await Task.Delay(interval, stoppingToken);
+                var remainingDelay = plan.IntervalMilliseconds
+                                     - (int)loopStopwatch.ElapsedMilliseconds;
+                if (remainingDelay > 0)
+                {
+                    await Task.Delay(remainingDelay, stoppingToken);
+                }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {

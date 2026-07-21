@@ -1,0 +1,52 @@
+<Window x:Class="LabKom.Teacher.FileCollectDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Kumpulkan File Siswa"
+        Width="500" Height="310"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner"
+        Background="#0F172A"
+        Foreground="#E2E8F0">
+    <Grid Margin="22">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <TextBlock Text="Pengumpulan satu file"
+                   FontSize="19" FontWeight="SemiBold" />
+        <TextBlock Grid.Row="1" Margin="0,5,0,16"
+                   Foreground="#94A3B8" TextWrapping="Wrap"
+                   Text="Siswa akan melihat permintaan dan harus menyetujuinya. Path absolut, wildcard, folder sistem, dan file kunci ditolak." />
+        <StackPanel Grid.Row="2">
+            <TextBlock Text="Folder dasar" Margin="0,0,0,5" />
+            <ComboBox x:Name="RootCombo" SelectedIndex="0"
+                      Background="#1E293B" Foreground="#E2E8F0">
+                <ComboBoxItem Content="Documents" Tag="Documents" />
+                <ComboBoxItem Content="Desktop" Tag="Desktop" />
+                <ComboBoxItem Content="Downloads" Tag="Downloads" />
+            </ComboBox>
+        </StackPanel>
+        <StackPanel Grid.Row="3" Margin="0,13,0,0">
+            <TextBlock Text="Path relatif file" Margin="0,0,0,5" />
+            <TextBox x:Name="RelativePathBox"
+                     Background="#1E293B" Foreground="#E2E8F0"
+                     BorderBrush="#475569" Padding="8"
+                     Text="Tugas.docx" />
+        </StackPanel>
+        <TextBlock Grid.Row="4" Margin="0,12,0,0"
+                   Foreground="#94A3B8"
+                   Text="Batas ukuran: 20 MB ? Transport: chunk 256 KB ? Integritas: SHA-256" />
+        <StackPanel Grid.Row="5" Orientation="Horizontal"
+                    HorizontalAlignment="Right">
+            <Button Content="Batal" Width="90" Margin="0,0,8,0"
+                    Padding="8" IsCancel="True" />
+            <Button Content="Kirim Permintaan" Width="145"
+                    Padding="8" IsDefault="True"
+                    Click="Submit_Click" />
+        </StackPanel>
+    </Grid>
+</Window>

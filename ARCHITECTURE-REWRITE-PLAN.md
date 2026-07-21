@@ -34,9 +34,9 @@ Windows Service tidak menangkap layar atau menulis ke Documents siswa karena ber
 - [x] Attention fullscreen virtual desktop dan keyboard policy dasar.
 - [x] Broadcast layar Teacher dasar dan chat dua arah.
 - [x] File download ber-checksum pada sesi pengguna.
-- [x] Warning-as-error serta 40 regression test.
-- [x] Command ID/TTL, acknowledgement Attention/Power, audit SQLite, dan replay Attention setelah Desktop reconnect.
-- [ ] Persisted classroom state dan recovery setelah Teacher restart.
+- [x] Warning-as-error serta 54 regression test.
+- [x] Command ID/TTL, acknowledgement Attention/Power, audit SQLite, serta snapshot atomik untuk recovery Desktop reconnect/Teacher restart.
+- [ ] Persisted desired lesson state setelah Teacher restart (snapshot fail-safe selesai).
 - [ ] Provisioning credential saat installer dan rotasi key.
 - [ ] MSI/WiX, upgrade/rollback, dan code signing.
 
@@ -45,17 +45,17 @@ Windows Service tidak menangkap layar atau menulis ke Documents siswa karena ber
 - [x] Thumbnail/focus serta pemilihan monitor.
 - [ ] DXGI Desktop Duplication, adaptive FPS/quality, dan telemetry.
 - [x] Target broadcast semua/terpilih, pause/resume, late-join state, dan sequence.
-- [ ] Target broadcast group tersimpan.
+- [x] Multi-select dan target broadcast group tersimpan.
 - [ ] Exhibit layar siswa, pointer, annotation, snapshot.
 - [ ] Remote view/control dengan audit dan policy.
 
 ## P2 - Workflow kelas
 
 - [x] Activity window, chat dasar, dan distribusi file download.
-- [ ] Login siswa, sesi, room/group/layout.
+- [ ] Login siswa, sesi, room, dan layout (grup tersimpan selesai).
 - [ ] Help request, feedback/survey, quick launch.
 - [ ] App/web/audio policy lengkap dengan status per-PC.
-- [ ] File collect, retry, progress realtime, dan conflict handling.
+- [ ] File collect dan retry (progress realtime serta konflik nama download selesai).
 
 ## P3 - Assessment dan technician
 

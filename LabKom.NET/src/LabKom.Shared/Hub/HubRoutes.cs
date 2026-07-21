@@ -26,14 +26,21 @@ public static class HubRoutes
         public const string PushScreenFrame = "PushScreenFrame";
         public const string PushMonitorInventory = "PushMonitorInventory";
         public const string PushActivityRecord = "PushActivityRecord";
+        public const string ReportDeviceKeyRotation = "ReportDeviceKeyRotation";
+        public const string PushDeviceTelemetry = "PushDeviceTelemetry";
         public const string ReportFileProgress = "ReportFileProgress";
         public const string ReportCommandResult = "ReportCommandResult";
+        public const string ReportRemoteSessionStatus = "ReportRemoteSessionStatus";
+        public const string PushFileCollectionChunk = "PushFileCollectionChunk";
+        public const string SubmitStudentRegistration = "SubmitStudentRegistration";
+        public const string SubmitAssessment = "SubmitAssessment";
 
         // Hub -> Student Agent
         public const string ReceivePowerCommand = "ReceivePowerCommand";
         public const string ReceiveFileNotice = "ReceiveFileNotice";
         public const string ReceiveWebFilterPolicy = "ReceiveWebFilterPolicy";
         public const string ReceiveAppBlockPolicy = "ReceiveAppBlockPolicy";
+        public const string ReceiveDeviceKeyRotation = "ReceiveDeviceKeyRotation";
 
         // Hub -> Student Desktop
         public const string ReceiveAttention = "ReceiveAttention";
@@ -41,6 +48,11 @@ public static class HubRoutes
         public const string ReceiveCaptureProfile = "ReceiveCaptureProfile";
         public const string ReceiveTeacherFrame = "ReceiveTeacherFrame";
         public const string ReceiveTeacherBroadcastSignal = "ReceiveTeacherBroadcastSignal";
+        public const string ReceiveClassroomStateSnapshot = "ReceiveClassroomStateSnapshot";
+        public const string ReceiveRemoteSession = "ReceiveRemoteSession";
+        public const string ReceiveRemoteInput = "ReceiveRemoteInput";
+        public const string ReceiveFileCollectionRequest = "ReceiveFileCollectionRequest";
+        public const string ReceiveLessonSnapshot = "ReceiveLessonSnapshot";
 
         // Internal Teacher UI events
         public const string PresenceChanged = "PresenceChanged";

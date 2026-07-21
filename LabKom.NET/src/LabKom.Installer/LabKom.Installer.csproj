@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <RootNamespace>LabKom.Installer</RootNamespace>
+    <SetupAssemblyName Condition="'$(SetupAssemblyName)' == ''">LabKom.Setup</SetupAssemblyName>
+    <AssemblyName>$(SetupAssemblyName)</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <InstallerComponent Condition="'$(InstallerComponent)' == ''">Development</InstallerComponent>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.0" />
+    <ProjectReference Include="..\LabKom.Shared\LabKom.Shared.csproj" />
+    <AssemblyMetadata Include="InstallerComponent" Value="$(InstallerComponent)" />
+    <EmbeddedResource Include="$(PayloadPath)"
+                      LogicalName="LabKom.Installer.Payload.zip"
+                      Condition="'$(PayloadPath)' != '' And Exists('$(PayloadPath)')" />
+  </ItemGroup>
+</Project>

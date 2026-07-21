@@ -11,6 +11,11 @@ public enum ActivityKind
     ChatSent = 5,
     Violation = 6,
     System = 7,
+    FileTransfer = 8,
+    UsageSample = 9,
+    Registration = 10,
+    Assessment = 11,
+    FileCollection = 12,
 }
 
 /// <summary>

@@ -8,6 +8,13 @@
         Foreground="{StaticResource ForegroundBrush}"
         WindowStartupLocation="CenterScreen">
 
+    <Window.InputBindings>
+        <KeyBinding Gesture="F5" Command="{Binding RefreshStudentViewsCommand}" />
+        <KeyBinding Gesture="Ctrl+Q" Command="{Binding ExitApplicationCommand}" />
+        <KeyBinding Gesture="Ctrl+L" Command="{Binding LockAllCommand}" />
+        <KeyBinding Gesture="Ctrl+U" Command="{Binding UnlockAllCommand}" />
+    </Window.InputBindings>
+
     <Window.Resources>
         <Style x:Key="ToolbarBtn" TargetType="Button">
             <Setter Property="Background" Value="#1E293B" />
@@ -57,12 +64,99 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
+        <Menu Grid.Row="0" Background="#E2E8F0" Foreground="#0F172A">
+            <MenuItem Header="_File">
+                <MenuItem Header="Bagikan File ke Semua..."
+                          Command="{Binding ShareFileToAllCommand}" />
+                <MenuItem Header="Bagikan File ke PC Terpilih..."
+                          Command="{Binding ShareFileToSelectedCommand}" />
+                <MenuItem Header="Kumpulkan File dari PC Terpilih..."
+                          Command="{Binding CollectFileFromSelectedCommand}" />
+                <Separator />
+                <MenuItem Header="Keluar" InputGestureText="Ctrl+Q"
+                          Command="{Binding ExitApplicationCommand}" />
+            </MenuItem>
+            <MenuItem Header="_Edit">
+                <MenuItem Header="Bersihkan Aktivitas"
+                          Command="{Binding ClearActivitiesCommand}" />
+            </MenuItem>
+            <MenuItem Header="_View">
+                <MenuItem Header="Muat Ulang Thumbnail" InputGestureText="F5"
+                          Command="{Binding RefreshStudentViewsCommand}" />
+                <MenuItem Header="Tampilkan PC Offline"
+                          IsCheckable="True"
+                          IsChecked="{Binding ShowOfflineStudents, Mode=TwoWay}" />
+            </MenuItem>
+            <MenuItem Header="_Siswa">
+                <MenuItem Header="Kunci PC Terpilih"
+                          Command="{Binding LockSelectedCommand}" />
+                <MenuItem Header="Buka Kunci PC Terpilih"
+                          Command="{Binding UnlockSelectedCommand}" />
+                <Separator />
+                <MenuItem Header="Broadcast Layar ke PC Terpilih"
+                          Command="{Binding StartScreenBroadcastSelectedCommand}" />
+                <MenuItem Header="Kirim File ke PC Terpilih..."
+                          Command="{Binding ShareFileToSelectedCommand}" />
+                <MenuItem Header="Kumpulkan File..."
+                          Command="{Binding CollectFileFromSelectedCommand}" />
+                <MenuItem Header="Wake-on-LAN"
+                          Command="{Binding WakeSelectedCommand}" />
+                <Separator />
+                <MenuItem Header="Logoff PC Terpilih"
+                          Command="{Binding LogOffSelectedCommand}" />
+                <MenuItem Header="Restart PC Terpilih"
+                          Command="{Binding RestartSelectedCommand}" />
+                <MenuItem Header="Shutdown PC Terpilih"
+                          Command="{Binding ShutdownSelectedCommand}" />
+            </MenuItem>
+            <MenuItem Header="_Kelas">
+                <MenuItem Header="Room, Register, Lesson &amp; Assessment..."
+                          Command="{Binding OpenClassroomConsoleCommand}" />
+                <Separator />
+                <MenuItem Header="Kunci Semua" InputGestureText="Ctrl+L"
+                          Command="{Binding LockAllCommand}" />
+                <MenuItem Header="Buka Kunci Semua" InputGestureText="Ctrl+U"
+                          Command="{Binding UnlockAllCommand}" />
+                <Separator />
+                <MenuItem Header="Mulai Broadcast Layar"
+                          Command="{Binding StartScreenBroadcastAllCommand}" />
+                <MenuItem Header="Jeda/Lanjutkan Broadcast"
+                          Command="{Binding ToggleScreenBroadcastPauseCommand}" />
+                <MenuItem Header="Hentikan Broadcast"
+                          Command="{Binding StopScreenBroadcastCommand}" />
+                <Separator />
+                <MenuItem Header="Logoff Semua"
+                          Command="{Binding LogOffAllCommand}" />
+                <MenuItem Header="Shutdown Semua"
+                          Command="{Binding ShutdownAllCommand}" />
+            </MenuItem>
+            <MenuItem Header="_Tools">
+                <MenuItem Header="Technician Console..."
+                          Command="{Binding OpenTechnicianConsoleCommand}" />
+                <Separator />
+                <MenuItem Header="Atur Blokir Situs..."
+                          Command="{Binding ConfigureWebFilterCommand}" />
+                <MenuItem Header="Nonaktifkan Blokir Situs"
+                          Command="{Binding DisableWebFilterCommand}" />
+                <Separator />
+                <MenuItem Header="Atur Blokir Aplikasi..."
+                          Command="{Binding ConfigureAppBlockCommand}" />
+                <MenuItem Header="Nonaktifkan Blokir Aplikasi"
+                          Command="{Binding DisableAppBlockCommand}" />
+            </MenuItem>
+            <MenuItem Header="_Bantuan">
+                <MenuItem Header="Tentang LabKom"
+                          Command="{Binding ShowAboutCommand}" />
+            </MenuItem>
+        </Menu>
+
         <!-- Header -->
-        <Border Grid.Row="0" Background="{StaticResource SurfaceBrush}" Padding="20,16"
+        <Border Grid.Row="1" Background="{StaticResource SurfaceBrush}" Padding="20,16"
                 BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,0,1">
             <Grid>
                 <Grid.ColumnDefinitions>
@@ -72,6 +166,11 @@
                 <StackPanel Grid.Column="0">
                     <TextBlock Text="LabKom Teacher Console" FontSize="20" FontWeight="SemiBold" />
                     <TextBlock Text="{Binding ServerStatus}" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,4,0,0" />
+                    <TextBlock Text="{Binding CurrentRole, StringFormat=Role Windows: {0}}"
+                               Foreground="#93C5FD" FontSize="11" Margin="0,2,0,0" />
+                    <TextBlock Text="{Binding TelemetryStatus}"
+                               ToolTip="{Binding TelemetryFilePath}"
+                               Foreground="#34D399" FontSize="11" Margin="0,2,0,0" />
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                     <Border Background="#7C2D12" Padding="10,4" CornerRadius="4" Margin="0,0,8,0"
@@ -95,18 +194,18 @@
         </Border>
 
         <!-- Toolbar -->
-        <Border Grid.Row="1" Background="#0B1120" Padding="16,12"
+        <Border Grid.Row="2" Background="#0B1120" Padding="16,12"
                 BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,0,1">
             <StackPanel Orientation="Horizontal">
-                <Button Content="🔒 Kunci Semua" Style="{StaticResource ToolbarBtn}" Command="{Binding LockAllCommand}" />
-                <Button Content="🔓 Buka Kunci Semua" Style="{StaticResource ToolbarBtn}" Command="{Binding UnlockAllCommand}" />
+                <Button Content="Kunci Semua" Style="{StaticResource ToolbarBtn}" Command="{Binding LockAllCommand}" />
+                <Button Content="Buka Kunci Semua" Style="{StaticResource ToolbarBtn}" Command="{Binding UnlockAllCommand}" />
                 <Button Command="{Binding ToggleScreenBroadcastCommand}">
                     <Button.Style>
                         <Style TargetType="Button" BasedOn="{StaticResource LiveBtn}">
-                            <Setter Property="Content" Value="🖥️ Mulai Broadcast Layar" />
+                            <Setter Property="Content" Value="Mulai Broadcast Layar" />
                             <Style.Triggers>
                                 <DataTrigger Binding="{Binding IsScreenBroadcasting}" Value="True">
-                                    <Setter Property="Content" Value="⏹ Hentikan Broadcast" />
+                                    <Setter Property="Content" Value="Hentikan Broadcast" />
                                 </DataTrigger>
                             </Style.Triggers>
                         </Style>
@@ -128,20 +227,27 @@
                         </Style>
                     </Button.Style>
                 </Button>
-                <Button Content="📂 Bagikan File ke Semua" Style="{StaticResource AccentBtn}" Command="{Binding ShareFileToAllCommand}" />
-                <Button Content="⏻ Shutdown Semua" Style="{StaticResource DangerBtn}" Command="{Binding ShutdownAllCommand}" />
+                <Button Content="Bagikan File ke Semua" Style="{StaticResource AccentBtn}" Command="{Binding ShareFileToAllCommand}" />
+                <Button Content="Shutdown Semua" Style="{StaticResource DangerBtn}" Command="{Binding ShutdownAllCommand}" />
                 <Separator Margin="6,0" />
                 <TextBox Text="{Binding BroadcastMessage, UpdateSourceTrigger=PropertyChanged}"
                          MaxLength="2000"
                          Width="220" Height="32" VerticalContentAlignment="Center"
                          Background="#1E293B" Foreground="#E2E8F0"
                          BorderBrush="#334155" Padding="8,0" Margin="0,0,8,0" />
-                <Button Content="📢 Broadcast Chat" Style="{StaticResource AccentBtn}" Command="{Binding BroadcastChatCommand}" />
+                <Button Content="Broadcast Chat" Style="{StaticResource AccentBtn}" Command="{Binding BroadcastChatCommand}" />
+                <Separator Margin="6,0" />
+                <TextBlock Text="Cari" VerticalAlignment="Center"
+                           Foreground="{StaticResource MutedBrush}" Margin="0,0,6,0" />
+                <TextBox Text="{Binding StudentSearch, UpdateSourceTrigger=PropertyChanged}"
+                         Width="150" Height="32" VerticalContentAlignment="Center"
+                         Background="#1E293B" Foreground="#E2E8F0"
+                         BorderBrush="#334155" Padding="8,0" />
             </StackPanel>
         </Border>
 
         <!-- Body -->
-        <Grid Grid.Row="2">
+        <Grid Grid.Row="3">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="320" />
@@ -150,13 +256,13 @@
 
             <!-- Tile grid -->
             <ScrollViewer Grid.Column="0" Padding="16" VerticalScrollBarVisibility="Auto">
-                <ItemsControl ItemsSource="{Binding Students}">
+                <ItemsControl ItemsSource="{Binding StudentsView}">
                     <ItemsControl.ItemsPanel>
                         <ItemsPanelTemplate><WrapPanel Orientation="Horizontal" /></ItemsPanelTemplate>
                     </ItemsControl.ItemsPanel>
                     <ItemsControl.ItemTemplate>
                         <DataTemplate DataType="{x:Type vm:StudentTileViewModel}">
-                            <Border Width="240" Height="200" Margin="6" CornerRadius="10" BorderThickness="2"
+                            <Border Width="250" Height="235" Margin="6" CornerRadius="10" BorderThickness="2"
                                     Background="{StaticResource SurfaceBrush}">
                                 <Border.Style>
                                     <Style TargetType="Border">
@@ -194,6 +300,10 @@
                                     </Border>
                                     <Border Grid.Row="1" Padding="10,6" Background="#0B1120" CornerRadius="0,0,8,8">
                                         <Grid>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                            </Grid.RowDefinitions>
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />
                                                 <ColumnDefinition Width="Auto" />
@@ -213,6 +323,13 @@
                                                     </TextBlock.Foreground>
                                                 </TextBlock>
                                             </Border>
+                                            <TextBlock Grid.Row="1" Grid.ColumnSpan="2"
+                                                       Text="{Binding TelemetryLabel}"
+                                                       FontSize="9" TextWrapping="Wrap" Margin="0,5,0,0">
+                                                <TextBlock.Foreground>
+                                                    <SolidColorBrush Color="{Binding TelemetryColor}" />
+                                                </TextBlock.Foreground>
+                                            </TextBlock>
                                         </Grid>
                                     </Border>
                                 </Grid>
@@ -233,6 +350,56 @@
                     BorderBrush="{StaticResource BorderBrush}" BorderThickness="1,0,0,0" Padding="20">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel>
+                        <Border Background="#0B1120" BorderBrush="#334155"
+                                BorderThickness="1" CornerRadius="8"
+                                Padding="12" Margin="0,0,0,14">
+                            <StackPanel>
+                                <TextBlock Text="Pilihan &amp; Grup Kelas"
+                                           FontSize="13" FontWeight="SemiBold" />
+                                <TextBlock Text="{Binding SelectionStatus}"
+                                           Foreground="{StaticResource MutedBrush}"
+                                           FontSize="10" TextWrapping="Wrap"
+                                           Margin="0,3,0,8" />
+                                <StackPanel Orientation="Horizontal">
+                                    <Button Content="Pilih Online"
+                                            Style="{StaticResource ToolbarBtn}"
+                                            Padding="8,5" Margin="0,0,6,6"
+                                            Command="{Binding SelectAllOnlineCommand}" />
+                                    <Button Content="Kosongkan"
+                                            Style="{StaticResource ToolbarBtn}"
+                                            Padding="8,5" Margin="0,0,0,6"
+                                            Command="{Binding ClearSelectionCommand}" />
+                                </StackPanel>
+                                <ComboBox ItemsSource="{Binding SavedGroups}"
+                                          SelectedItem="{Binding SelectedGroup, Mode=TwoWay}"
+                                          DisplayMemberPath="Label"
+                                          MinHeight="30" Padding="6,2"
+                                          Margin="0,0,0,6" />
+                                <StackPanel Orientation="Horizontal">
+                                    <Button Content="Pilih Grup"
+                                            Style="{StaticResource AccentBtn}"
+                                            Padding="8,5" Margin="0,0,6,8"
+                                            Command="{Binding ApplySelectedGroupCommand}" />
+                                    <Button Content="Hapus"
+                                            Style="{StaticResource DangerBtn}"
+                                            Padding="8,5" Margin="0,0,0,8"
+                                            Command="{Binding DeleteSelectedGroupCommand}" />
+                                </StackPanel>
+                                <TextBox Text="{Binding NewGroupName, UpdateSourceTrigger=PropertyChanged}"
+                                         MaxLength="64" MinHeight="30" Padding="7,4"
+                                         Background="#111827" Foreground="#E2E8F0"
+                                         BorderBrush="#334155"
+                                         ToolTip="Nama grup baru" />
+                                <Button Content="Simpan Pilihan sebagai Grup"
+                                        Style="{StaticResource AccentBtn}"
+                                        HorizontalContentAlignment="Center"
+                                        Margin="0,6,0,0"
+                                        Command="{Binding SaveSelectionAsGroupCommand}" />
+                                <TextBlock Text="Ctrl+klik tile untuk memilih beberapa PC."
+                                           Foreground="{StaticResource MutedBrush}"
+                                           FontSize="9" Margin="0,7,0,0" />
+                            </StackPanel>
+                        </Border>
                         <TextBlock Text="Detail PC" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,12" />
 
                         <Grid>
@@ -263,35 +430,60 @@
                                           MinHeight="30" Padding="6,2" />
                                 <TextBlock Text="{Binding SelectedStudent.FrameResolution, StringFormat=Frame: {0}}"
                                            Foreground="{StaticResource MutedBrush}" FontSize="10" Margin="0,4,0,0" />
+                                <TextBlock Text="{Binding SelectedStudent.StreamQualityLabel}"
+                                           Foreground="#38BDF8"
+                                           FontSize="10"
+                                           TextWrapping="Wrap"
+                                           Margin="0,2,0,0" />
+
+                                <TextBlock Text="Pesan ke pilihan" Foreground="{StaticResource MutedBrush}"
+                                           FontSize="11" FontWeight="SemiBold" Margin="0,14,0,6" />
+                                <TextBox Text="{Binding SelectedMessage, UpdateSourceTrigger=PropertyChanged}"
+                                         MaxLength="2000" MinHeight="34" Padding="8,5"
+                                         TextWrapping="Wrap" AcceptsReturn="True"
+                                         Background="#111827" Foreground="#E2E8F0"
+                                         BorderBrush="#334155" />
+                                <Button Content="Kirim Pesan ke Pilihan" Style="{StaticResource AccentBtn}"
+                                        HorizontalContentAlignment="Center" Margin="0,6,0,6"
+                                        Command="{Binding SendChatSelectedCommand}" />
 
                                 <TextBlock Text="Aksi" Foreground="{StaticResource MutedBrush}"
-                                           FontSize="11" FontWeight="SemiBold" Margin="0,18,0,8" />
-                                <Button Content="🔒 Kunci Layar" Style="{StaticResource ToolbarBtn}"
+                                           FontSize="11" FontWeight="SemiBold" Margin="0,12,0,8" />
+                                <Button Content="Remote View / Control"
+                                        Style="{StaticResource AccentBtn}"
+                                        HorizontalContentAlignment="Center"
+                                        Margin="0,0,0,8"
+                                        ToolTip="Mulai view-only; kontrol harus diaktifkan eksplisit di jendela remote"
+                                        Command="{Binding OpenRemoteCommand}" />
+                                <Button Content="Kunci Pilihan" Style="{StaticResource ToolbarBtn}"
                                         HorizontalContentAlignment="Center" Margin="0,0,0,6"
                                         Command="{Binding LockSelectedCommand}" />
-                                <Button Content="🔓 Buka Kunci" Style="{StaticResource ToolbarBtn}"
+                                <Button Content="Buka Pilihan" Style="{StaticResource ToolbarBtn}"
                                         HorizontalContentAlignment="Center" Margin="0,0,0,6"
                                         Command="{Binding UnlockSelectedCommand}" />
-                                <Button Content="Broadcast layar ke PC ini" Style="{StaticResource AccentBtn}"
+                                <Button Content="Broadcast layar ke Pilihan" Style="{StaticResource AccentBtn}"
                                         HorizontalContentAlignment="Center" Margin="0,0,0,6"
                                         Command="{Binding StartScreenBroadcastSelectedCommand}" />
-                                <Button Content="📂 Kirim File ke PC ini" Style="{StaticResource AccentBtn}"
+                                <Button Content="Kirim File ke Pilihan" Style="{StaticResource AccentBtn}"
                                         HorizontalContentAlignment="Center" Margin="0,0,0,6"
                                         Command="{Binding ShareFileToSelectedCommand}" />
-                                <Button Content="📡 Wake-on-LAN" Style="{StaticResource AccentBtn}"
+                                <Button Content="Wake-on-LAN Pilihan" Style="{StaticResource AccentBtn}"
                                         HorizontalContentAlignment="Center" Margin="0,0,0,6"
                                         Command="{Binding WakeSelectedCommand}" />
-                                <Button Content="🔄 Restart" Style="{StaticResource ToolbarBtn}"
+                                <Button Content="Logoff Pilihan" Style="{StaticResource ToolbarBtn}"
+                                        HorizontalContentAlignment="Center" Margin="0,0,0,6"
+                                        Command="{Binding LogOffSelectedCommand}" />
+                                <Button Content="Restart Pilihan" Style="{StaticResource ToolbarBtn}"
                                         HorizontalContentAlignment="Center" Margin="0,0,0,6"
                                         Command="{Binding RestartSelectedCommand}" />
-                                <Button Content="⏻ Shutdown" Style="{StaticResource DangerBtn}"
+                                <Button Content="Shutdown Pilihan" Style="{StaticResource DangerBtn}"
                                         HorizontalContentAlignment="Center" Margin="0,0,0,6"
                                         Command="{Binding ShutdownSelectedCommand}" />
                             </StackPanel>
                         </Grid>
 
                         <TextBlock Foreground="{StaticResource MutedBrush}" FontSize="11" TextWrapping="Wrap"
-                                   Text="Pilih salah satu PC pada grid untuk menampilkan detail dan aksi.">
+                                   Text="Klik tile untuk fokus. Gunakan Ctrl+klik untuk memilih beberapa PC; aksi dijalankan ke seluruh pilihan.">
                             <TextBlock.Style>
                                 <Style TargetType="TextBlock">
                                     <Setter Property="Visibility" Value="Collapsed" />
@@ -363,10 +555,15 @@
         </Grid>
 
         <!-- Footer -->
-        <Border Grid.Row="3" Background="{StaticResource SurfaceBrush}" Padding="20,8"
+        <Border Grid.Row="4" Background="{StaticResource SurfaceBrush}" Padding="20,8"
                 BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,1,0,0">
-            <TextBlock Text="UDP Discovery · SignalR Hub @ 41235 · v0.2.0 (Native foundation)"
-                       Foreground="{StaticResource MutedBrush}" FontSize="11" />
+            <Grid>
+                <TextBlock Text="{Binding PolicyStatus}"
+                           Foreground="{StaticResource MutedBrush}" FontSize="10" />
+                <TextBlock Text="HTTPS SignalR 41235 | Native v0.9"
+                           HorizontalAlignment="Right"
+                           Foreground="{StaticResource MutedBrush}" FontSize="10" />
+            </Grid>
         </Border>
     </Grid>
 </Window>

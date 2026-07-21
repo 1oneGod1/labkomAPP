@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using Microsoft.Extensions.Logging;
+using LabKom.Shared.Security;
 
 namespace LabKom.Teacher.Services;
 
@@ -12,10 +13,19 @@ namespace LabKom.Teacher.Services;
 public class WakeOnLanService
 {
     private readonly ILogger<WakeOnLanService> _logger;
-    public WakeOnLanService(ILogger<WakeOnLanService> logger) { _logger = logger; }
+    private readonly TeacherAuthorizationService _authorization;
+
+    public WakeOnLanService(
+        ILogger<WakeOnLanService> logger,
+        TeacherAuthorizationService authorization)
+    {
+        _logger = logger;
+        _authorization = authorization;
+    }
 
     public bool TryWake(string macAddress)
     {
+        _authorization.Demand(TeacherPermission.ManagePower, "power.wake", macAddress);
         var bytes = ParseMac(macAddress);
         if (bytes is null)
         {

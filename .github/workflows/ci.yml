@@ -50,3 +50,25 @@ jobs:
           dotnet-version: 8.0.x
       - name: Build .NET rewrite
         run: dotnet build LabKom.NET/LabKom.sln --configuration Release
+      - name: Test .NET rewrite
+        run: dotnet test LabKom.NET/LabKom.sln --configuration Release --no-build --no-restore
+      - name: Runtime health checks
+        shell: pwsh
+        run: |
+          $health = Join-Path $env:RUNNER_TEMP "labkom-health"
+          New-Item -ItemType Directory -Path $health -Force | Out-Null
+          $env:LABKOM_SHARED_SECRET = "CI-health-check-only-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+          $env:Security__ClassroomId = [Guid]::NewGuid().ToString("N")
+          $env:Security__AuditPath = Join-Path $health "audit.jsonl"
+          $env:Security__TlsPinPath = Join-Path $health "tls-pin.txt"
+          $env:Telemetry__OutputDirectory = Join-Path $health "telemetry"
+          $env:Database__ConnectionString = "Data Source=" + (Join-Path $health "labkom.db")
+          $env:Teacher__HubPort = "42135"
+          dotnet "LabKom.NET/src/LabKom.Teacher/bin/Release/net8.0-windows/LabKom.Teacher.dll" --health-check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet "LabKom.NET/src/LabKom.Student/bin/Release/net8.0-windows/LabKom.Student.Agent.dll" --health-check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item Env:\LABKOM_SHARED_SECRET -ErrorAction SilentlyContinue
+
+      - name: Verify .NET formatting
+        run: dotnet format LabKom.NET/LabKom.sln --no-restore --verify-no-changes

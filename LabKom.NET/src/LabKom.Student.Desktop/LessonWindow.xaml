@@ -1,0 +1,83 @@
+<Window x:Class="LabKom.Student.Desktop.LessonWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="LabKom Lesson"
+        Width="760" Height="760"
+        MinWidth="620" MinHeight="560"
+        WindowStartupLocation="CenterScreen"
+        Background="#0F172A"
+        Foreground="#E2E8F0">
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <StackPanel>
+            <TextBlock x:Name="RoomText" FontSize="12"
+                       Foreground="#93C5FD" />
+            <TextBlock x:Name="LessonTitleText"
+                       FontSize="24" FontWeight="SemiBold"
+                       Margin="0,4,0,0" />
+            <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
+                <TextBlock x:Name="PhaseText" Foreground="#94A3B8" />
+                <TextBlock Text="  ?  " Foreground="#475569" />
+                <TextBlock x:Name="TimerText" Foreground="#FBBF24" />
+            </StackPanel>
+        </StackPanel>
+
+        <Border Grid.Row="1" Margin="0,18,0,14"
+                Padding="16" CornerRadius="8"
+                Background="#1E293B" BorderBrush="#334155"
+                BorderThickness="1">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="180" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Margin="0,0,12,0">
+                    <TextBlock Text="NIS / ID Siswa" Margin="0,0,0,5" />
+                    <TextBox x:Name="StudentCodeBox" Padding="7"
+                             Background="#0F172A" Foreground="#E2E8F0" />
+                </StackPanel>
+                <StackPanel Grid.Column="1" Margin="0,0,12,0">
+                    <TextBlock Text="Nama Lengkap" Margin="0,0,0,5" />
+                    <TextBox x:Name="FullNameBox" Padding="7"
+                             Background="#0F172A" Foreground="#E2E8F0" />
+                </StackPanel>
+                <Button Grid.Column="2" x:Name="RegisterButton"
+                        Content="Register" Padding="16,8"
+                        VerticalAlignment="Bottom"
+                        Click="Register_Click" />
+            </Grid>
+        </Border>
+
+        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                <TextBlock x:Name="AssessmentTitleText"
+                           FontSize="18" FontWeight="SemiBold"
+                           Margin="0,0,0,12" />
+                <StackPanel x:Name="QuestionsPanel" />
+                <TextBlock x:Name="InformationText"
+                           Foreground="#94A3B8"
+                           TextWrapping="Wrap"
+                           HorizontalAlignment="Center"
+                           Margin="0,30" />
+            </StackPanel>
+        </ScrollViewer>
+
+        <StackPanel Grid.Row="3" Orientation="Horizontal"
+                    HorizontalAlignment="Right" Margin="0,14,0,0">
+            <TextBlock x:Name="SubmitStatusText"
+                       VerticalAlignment="Center"
+                       Foreground="#34D399" Margin="0,0,14,0" />
+            <Button x:Name="SubmitAssessmentButton"
+                    Content="Kirim Jawaban"
+                    Padding="18,9"
+                    Visibility="Collapsed"
+                    Click="SubmitAssessment_Click" />
+        </StackPanel>
+    </Grid>
+</Window>

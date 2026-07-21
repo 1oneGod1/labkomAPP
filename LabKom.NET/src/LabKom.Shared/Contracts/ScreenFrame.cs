@@ -9,6 +9,14 @@ public enum CaptureProfile
     Focus = 1,
 }
 
+public enum ScreenCaptureBackend
+{
+    Unknown = 0,
+    Gdi = 1,
+    DxgiDesktopDuplication = 2,
+}
+
+
 /// <summary>
 /// Frame layar yang dikirim Student Desktop ke Teacher melalui SignalR.
 /// StreamId dan SequenceNumber mencegah frame lama menggantikan frame baru.
@@ -24,6 +32,13 @@ public sealed record ScreenFrame(
     long SequenceNumber,
     long TimestampUnixMs)
 {
+    public ScreenCaptureBackend CaptureBackend { get; init; } = ScreenCaptureBackend.Unknown;
+    public int JpegQuality { get; init; }
+    public int TargetFramesPerSecond { get; init; }
+    public int CaptureDurationMilliseconds { get; init; }
+    public int PreviousSendDurationMilliseconds { get; init; }
+
+
     public static ScreenFrame Create(
         string pcName,
         CaptureProfile profile,

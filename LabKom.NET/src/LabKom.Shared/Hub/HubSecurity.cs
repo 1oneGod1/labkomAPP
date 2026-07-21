@@ -7,6 +7,9 @@ namespace LabKom.Shared.Hub;
 public static class HubSecurity
 {
     public const string HeaderName = "X-LabKom-Key";
+    public const string DeviceIdHeaderName = "X-LabKom-Device-Id";
+    public const string KeyVersionHeaderName = "X-LabKom-Key-Version";
+    public const string PcNameHeaderName = "X-LabKom-Pc";
     public const int MinimumSecretLength = 32;
     public const int MaximumPcNameLength = 63;
 

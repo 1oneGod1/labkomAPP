@@ -6,7 +6,7 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <Authors>LabKom Team</Authors>
     <Product>LabKom Lab Management</Product>
-    <Version>0.2.0</Version>
+    <Version>0.9.0</Version>
     <RootNamespace>$(MSBuildProjectName)</RootNamespace>
   </PropertyGroup>
 </Project>

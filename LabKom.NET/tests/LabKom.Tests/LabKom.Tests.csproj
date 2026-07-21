@@ -16,5 +16,6 @@
     <ProjectReference Include="..\..\src\LabKom.Shared\LabKom.Shared.csproj" />
     <ProjectReference Include="..\..\src\LabKom.Teacher\LabKom.Teacher.csproj" />
     <ProjectReference Include="..\..\src\LabKom.Student.Desktop\LabKom.Student.Desktop.csproj" />
+    <ProjectReference Include="..\..\src\LabKom.Student\LabKom.Student.csproj" />
   </ItemGroup>
 </Project>

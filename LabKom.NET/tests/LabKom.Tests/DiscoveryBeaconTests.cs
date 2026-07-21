@@ -1,3 +1,6 @@
+using System.Net;
+using System.Net.Security;
+using System.Net.Sockets;
 using LabKom.Shared.Discovery;
 using LabKom.Shared.Hub;
 using LabKom.Shared.Security;
@@ -66,5 +69,45 @@ public sealed class DiscoveryBeaconTests
         Assert.True(CertificatePin.IsValid(provider.Sha256Pin));
         Assert.True(CertificatePin.Matches(provider.Certificate, provider.Sha256Pin));
         Assert.False(CertificatePin.Matches(provider.Certificate, new string('f', 64)));
+    }
+
+    [Fact]
+    public async Task TeacherCertificateCompletesWindowsTlsHandshake()
+    {
+        using var provider = new TeacherCertificateProvider();
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        try
+        {
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var server = Task.Run(async () =>
+            {
+                using var accepted = await listener.AcceptTcpClientAsync(cancellationToken);
+                await using var serverTls = new SslStream(
+                    accepted.GetStream(),
+                    leaveInnerStreamOpen: false);
+                await serverTls.AuthenticateAsServerAsync(
+                    provider.Certificate,
+                    clientCertificateRequired: false,
+                    checkCertificateRevocation: false);
+            }, cancellationToken);
+
+            using var client = new TcpClient();
+            await client.ConnectAsync(IPAddress.Loopback, port, cancellationToken);
+            await using var clientTls = new SslStream(
+                client.GetStream(),
+                leaveInnerStreamOpen: false,
+                (_, _, _, _) => true);
+            await clientTls.AuthenticateAsClientAsync("localhost");
+            await server.WaitAsync(
+                TimeSpan.FromSeconds(10),
+                cancellationToken);
+            Assert.True(clientTls.IsAuthenticated);
+        }
+        finally
+        {
+            listener.Stop();
+        }
     }
 }

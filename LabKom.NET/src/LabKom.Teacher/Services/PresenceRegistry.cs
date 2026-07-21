@@ -22,6 +22,7 @@ public sealed class PresenceRegistry
     public event EventHandler<ChatMessage>? ChatReceived;
     public event EventHandler<ScreenFrame>? FrameUpdated;
     public event EventHandler<MonitorInventory>? MonitorInventoryUpdated;
+    public event EventHandler<RemoteSessionStatus>? RemoteSessionStatusReceived;
 
     public IReadOnlyCollection<StudentEntry> Snapshot() => _byPc.Values.ToArray();
 
@@ -186,6 +187,9 @@ public sealed class PresenceRegistry
     }
 
     public void RecordChat(ChatMessage message) => ChatReceived?.Invoke(this, message);
+
+    public void RecordRemoteSessionStatus(RemoteSessionStatus status) =>
+        RemoteSessionStatusReceived?.Invoke(this, status);
 
     private void Raise(PresenceUpdate update) => PresenceChanged?.Invoke(this, update);
 }

@@ -3,6 +3,7 @@ using System.IO;
 using System.Windows.Media.Imaging;
 using CommunityToolkit.Mvvm.ComponentModel;
 using LabKom.Shared.Contracts;
+using LabKom.Teacher.Services;
 
 namespace LabKom.Teacher.ViewModels;
 
@@ -21,6 +22,15 @@ public partial class StudentTileViewModel : ObservableObject
     [ObservableProperty] private bool _isSelected;
     [ObservableProperty] private string _currentMonitorId = string.Empty;
     [ObservableProperty] private string _frameResolution = string.Empty;
+    [ObservableProperty] private string _streamQualityLabel = string.Empty;
+    [ObservableProperty] private string _telemetryLabel = "Telemetry belum tersedia";
+    [ObservableProperty] private string _telemetryColor = "#64748B";
+    [ObservableProperty] private double _cpuPercent;
+    [ObservableProperty] private double _memoryPercent;
+    [ObservableProperty] private double _diskFreePercent;
+    [ObservableProperty] private double _telemetryLatencyMs;
+    [ObservableProperty] private long _networkReceiveBytesPerSecond;
+    [ObservableProperty] private long _networkSendBytesPerSecond;
 
     public ObservableCollection<MonitorOptionViewModel> Monitors { get; } = new();
 
@@ -65,8 +75,11 @@ public partial class StudentTileViewModel : ObservableObject
             Monitors.Clear();
             CurrentMonitorId = string.Empty;
             FrameResolution = string.Empty;
+            StreamQualityLabel = string.Empty;
             _lastFrameStreamId = null;
             _lastFrameSequence = 0;
+            TelemetryLabel = "Telemetry offline";
+            TelemetryColor = "#64748B";
         }
     }
 
@@ -92,6 +105,41 @@ public partial class StudentTileViewModel : ObservableObject
         }
     }
 
+    public void ApplyTelemetry(DeviceTelemetrySnapshot snapshot)
+    {
+        var telemetry = snapshot.Telemetry;
+        CpuPercent = telemetry.CpuPercent;
+        MemoryPercent = Percent(
+            telemetry.UsedMemoryBytes,
+            telemetry.TotalMemoryBytes);
+        DiskFreePercent = Percent(
+            telemetry.DiskFreeBytes,
+            telemetry.DiskTotalBytes);
+        TelemetryLatencyMs = snapshot.LatencyMs;
+        NetworkReceiveBytesPerSecond = telemetry.NetworkReceiveBytesPerSecond;
+        NetworkSendBytesPerSecond = telemetry.NetworkSendBytesPerSecond;
+        TelemetryColor = snapshot.Health switch
+        {
+            TelemetryHealth.Healthy => "#10B981",
+            TelemetryHealth.Warning => "#F59E0B",
+            TelemetryHealth.Critical => "#EF4444",
+            _ => "#64748B",
+        };
+        TelemetryLabel =
+            $"CPU {CpuPercent:F0}% ? RAM {MemoryPercent:F0}% ? Disk {DiskFreePercent:F0}% bebas"
+            + Environment.NewLine
+            + $"? {FormatRate(NetworkReceiveBytesPerSecond)}  ? {FormatRate(NetworkSendBytesPerSecond)}"
+            + $" ? {TelemetryLatencyMs:F0} ms";
+    }
+
+    private static double Percent(long value, long total) =>
+        total <= 0 ? 0 : 100d * value / total;
+
+    private static string FormatRate(long bytesPerSecond) =>
+        bytesPerSecond >= 1024 * 1024
+            ? $"{bytesPerSecond / (1024d * 1024):F1} MB/s"
+            : $"{bytesPerSecond / 1024d:F0} KB/s";
+
     public bool ApplyFrame(ScreenFrame frame)
     {
         if (frame.JpegData.Length == 0) return false;
@@ -113,6 +161,11 @@ public partial class StudentTileViewModel : ObservableObject
             Thumbnail = bitmap;
             CurrentMonitorId = frame.MonitorId;
             FrameResolution = $"{frame.Width}x{frame.Height}";
+            StreamQualityLabel =
+                $"{frame.CaptureBackend} | {frame.TargetFramesPerSecond} fps Q{frame.JpegQuality}"
+                + $" | capture {frame.CaptureDurationMilliseconds} ms"
+                + $" / send {frame.PreviousSendDurationMilliseconds} ms";
+
             _lastFrameStreamId = frame.StreamId;
             _lastFrameSequence = frame.SequenceNumber;
             return true;

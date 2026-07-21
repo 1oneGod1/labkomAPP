@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using LabKom.Shared.Contracts;
 using LabKom.Shared.Hub;
+using LabKom.Shared.Security;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
 
@@ -27,11 +28,12 @@ public sealed class TeacherScreenBroadcaster : IDisposable
     private readonly ILogger<TeacherScreenBroadcaster> _logger;
     private readonly ImageCodecInfo _jpegCodec;
     private readonly SemaphoreSlim _stateGate = new(1, 1);
+    private readonly TeacherAuthorizationService _authorization;
 
     private CancellationTokenSource? _cancellation;
     private Task? _loopTask;
     private string _broadcastId = string.Empty;
-    private string? _targetPcName;
+    private string[]? _targetPcNames;
     private long _sequenceNumber;
     private bool _isActive;
     private bool _isPaused;
@@ -41,25 +43,36 @@ public sealed class TeacherScreenBroadcaster : IDisposable
 
     public TeacherScreenBroadcaster(
         HubContextHolder hub,
-        ILogger<TeacherScreenBroadcaster> logger)
+        ILogger<TeacherScreenBroadcaster> logger,
+        TeacherAuthorizationService authorization)
     {
         _hub = hub;
         _logger = logger;
+        _authorization = authorization;
         _jpegCodec = ImageCodecInfo.GetImageEncoders()
             .First(codec => codec.FormatID == ImageFormat.Jpeg.Guid);
     }
 
     public bool IsActive => Volatile.Read(ref _isActive);
     public bool IsPaused => Volatile.Read(ref _isPaused);
-    public string? TargetPcName => _targetPcName;
+    public IReadOnlyList<string>? TargetPcNames => _targetPcNames;
+    public string AudienceLabel => _targetPcNames switch
+    {
+        null => "Semua siswa",
+        { Length: 1 } targets => targets[0],
+        { } targets => $"{targets.Length} PC terpilih",
+    };
 
     public event EventHandler? StateChanged;
 
     public TeacherBroadcastSignal? BuildReplayFor(string pcName)
     {
+        var targets = _targetPcNames;
         if (!IsActive
-            || (_targetPcName is not null
-                && !string.Equals(_targetPcName, pcName, StringComparison.OrdinalIgnoreCase)))
+            || (targets is not null
+                && !targets.Contains(
+                    pcName,
+                    StringComparer.OrdinalIgnoreCase)))
         {
             return null;
         }
@@ -67,48 +80,27 @@ public sealed class TeacherScreenBroadcaster : IDisposable
         return new TeacherBroadcastSignal(_broadcastId, true, IsPaused);
     }
 
-    public async Task StartAsync(string? targetPcName = null)
+    public Task StartAsync(string? targetPcName = null) =>
+        Authorized(
+            "broadcast.start",
+            targetPcName,
+            () => StartCoreAsync(
+                targetPcName is null
+                    ? null
+                    : NormalizeTargets(new[] { targetPcName })));
+
+    public Task StartForTargetsAsync(IEnumerable<string> targetPcNames)
     {
-        if (targetPcName is not null && !HubSecurity.IsValidPcName(targetPcName))
-        {
-            throw new ArgumentException("Target PC broadcast tidak valid.", nameof(targetPcName));
-        }
-
-        await _stateGate.WaitAsync();
-        try
-        {
-            if (_isActive) return;
-
-            _broadcastId = Guid.NewGuid().ToString("N");
-            _targetPcName = targetPcName;
-            _sequenceNumber = 0;
-            Volatile.Write(ref _isPaused, false);
-            Volatile.Write(ref _isActive, true);
-
-            await SendSignalAsync(
-                _broadcastId,
-                _targetPcName,
-                active: true,
-                paused: false);
-
-            _cancellation = new CancellationTokenSource();
-            var token = _cancellation.Token;
-            _loopTask = Task.Run(() => CaptureLoopAsync(token), token);
-            RaiseStateChanged();
-
-            _logger.LogInformation(
-                "Teacher broadcast {BroadcastId} dimulai untuk {Target}",
-                _broadcastId,
-                _targetPcName ?? "semua Desktop");
-        }
-        finally
-        {
-            _stateGate.Release();
-        }
+        var targets = NormalizeTargets(targetPcNames);
+        return Authorized(
+            "broadcast.start.multiple",
+            string.Join(",", targets),
+            () => StartCoreAsync(targets));
     }
 
     public async Task TogglePauseAsync()
     {
+        _authorization.Demand(TeacherPermission.BroadcastScreen, "broadcast.pause-toggle", AudienceLabel);
         await _stateGate.WaitAsync();
         try
         {
@@ -118,7 +110,7 @@ public sealed class TeacherScreenBroadcaster : IDisposable
             Volatile.Write(ref _isPaused, paused);
             await SendSignalAsync(
                 _broadcastId,
-                _targetPcName,
+                _targetPcNames,
                 active: true,
                 paused);
             RaiseStateChanged();
@@ -131,6 +123,7 @@ public sealed class TeacherScreenBroadcaster : IDisposable
 
     public async Task StopAsync()
     {
+        _authorization.Demand(TeacherPermission.BroadcastScreen, "broadcast.stop", AudienceLabel);
         await _stateGate.WaitAsync();
         try
         {
@@ -148,7 +141,7 @@ public sealed class TeacherScreenBroadcaster : IDisposable
 
             await SendSignalAsync(
                 _broadcastId,
-                _targetPcName,
+                _targetPcNames,
                 active: false,
                 paused: false);
 
@@ -157,11 +150,92 @@ public sealed class TeacherScreenBroadcaster : IDisposable
             _loopTask = null;
             Volatile.Write(ref _isPaused, false);
             Volatile.Write(ref _isActive, false);
+            _targetPcNames = null;
             RaiseStateChanged();
 
             _logger.LogInformation(
                 "Teacher broadcast {BroadcastId} dihentikan",
                 _broadcastId);
+        }
+        finally
+        {
+            _stateGate.Release();
+        }
+    }
+
+    private Task Authorized(string action, string? target, Func<Task> operation)
+    {
+        _authorization.Demand(
+            TeacherPermission.BroadcastScreen,
+            action,
+            target);
+        return operation();
+    }
+
+    private async Task StartCoreAsync(string[]? targetPcNames)
+    {
+        await _stateGate.WaitAsync();
+        try
+        {
+            if (_isActive) return;
+
+            _broadcastId = Guid.NewGuid().ToString("N");
+            _targetPcNames = targetPcNames;
+            _sequenceNumber = 0;
+            Volatile.Write(ref _isPaused, false);
+            Volatile.Write(ref _isActive, true);
+
+            var signalSent = false;
+            try
+            {
+                await SendSignalAsync(
+                    _broadcastId,
+                    _targetPcNames,
+                    active: true,
+                    paused: false);
+                signalSent = true;
+
+                _cancellation = new CancellationTokenSource();
+                var token = _cancellation.Token;
+                _loopTask = Task.Run(
+                    () => CaptureLoopAsync(token),
+                    token);
+                RaiseStateChanged();
+
+                _logger.LogInformation(
+                    "Teacher broadcast {BroadcastId} dimulai untuk {Target}",
+                    _broadcastId,
+                    AudienceLabel);
+            }
+            catch
+            {
+                if (signalSent)
+                {
+                    try
+                    {
+                        await SendSignalAsync(
+                            _broadcastId,
+                            _targetPcNames,
+                            active: false,
+                            paused: false);
+                    }
+                    catch (Exception cleanupException)
+                    {
+                        _logger.LogDebug(
+                            cleanupException,
+                            "Rollback signal broadcast gagal");
+                    }
+                }
+
+                _cancellation?.Cancel();
+                _cancellation?.Dispose();
+                _cancellation = null;
+                _loopTask = null;
+                _targetPcNames = null;
+                Volatile.Write(ref _isPaused, false);
+                Volatile.Write(ref _isActive, false);
+                throw;
+            }
         }
         finally
         {
@@ -185,12 +259,16 @@ public sealed class TeacherScreenBroadcaster : IDisposable
                 var frame = CaptureFrame(_broadcastId, sequence);
                 if (frame is not null)
                 {
-                    await SendFrameAsync(frame, _targetPcName, cancellationToken);
+                    await SendFrameAsync(
+                        frame,
+                        _targetPcNames,
+                        cancellationToken);
                 }
 
                 await Task.Delay(IntervalMs, cancellationToken);
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (
+                cancellationToken.IsCancellationRequested)
             {
                 break;
             }
@@ -202,7 +280,9 @@ public sealed class TeacherScreenBroadcaster : IDisposable
         }
     }
 
-    private TeacherFrame? CaptureFrame(string broadcastId, long sequenceNumber)
+    private TeacherFrame? CaptureFrame(
+        string broadcastId,
+        long sequenceNumber)
     {
         try
         {
@@ -210,7 +290,10 @@ public sealed class TeacherScreenBroadcaster : IDisposable
             var height = GetSystemMetrics(1);
             if (width <= 0 || height <= 0) return null;
 
-            using var source = new Bitmap(width, height, PixelFormat.Format32bppArgb);
+            using var source = new Bitmap(
+                width,
+                height,
+                PixelFormat.Format32bppArgb);
             using (var graphics = Graphics.FromImage(source))
             {
                 graphics.CopyFromScreen(
@@ -234,13 +317,21 @@ public sealed class TeacherScreenBroadcaster : IDisposable
                 PixelFormat.Format24bppRgb);
             using (var graphics = Graphics.FromImage(destination))
             {
-                graphics.InterpolationMode = InterpolationMode.HighQualityBilinear;
-                graphics.DrawImage(source, 0, 0, destinationWidth, destinationHeight);
+                graphics.InterpolationMode =
+                    InterpolationMode.HighQualityBilinear;
+                graphics.DrawImage(
+                    source,
+                    0,
+                    0,
+                    destinationWidth,
+                    destinationHeight);
             }
 
             using var output = new MemoryStream();
             using var parameters = new EncoderParameters(1);
-            parameters.Param[0] = new EncoderParameter(Encoder.Quality, (long)JpegQuality);
+            parameters.Param[0] = new EncoderParameter(
+                Encoder.Quality,
+                (long)JpegQuality);
             destination.Save(output, _jpegCodec, parameters);
 
             return TeacherFrame.Create(
@@ -259,13 +350,13 @@ public sealed class TeacherScreenBroadcaster : IDisposable
 
     private Task SendFrameAsync(
         TeacherFrame frame,
-        string? targetPcName,
+        IReadOnlyCollection<string>? targetPcNames,
         CancellationToken cancellationToken)
     {
         var hub = _hub.HubContext;
         if (hub is null) return Task.CompletedTask;
 
-        return Audience(hub, targetPcName).SendAsync(
+        return Audience(hub, targetPcNames).SendAsync(
             HubRoutes.Methods.ReceiveTeacherFrame,
             frame,
             cancellationToken);
@@ -273,27 +364,60 @@ public sealed class TeacherScreenBroadcaster : IDisposable
 
     private Task SendSignalAsync(
         string broadcastId,
-        string? targetPcName,
+        IReadOnlyCollection<string>? targetPcNames,
         bool active,
         bool paused)
     {
         var hub = _hub.HubContext;
         if (hub is null) return Task.CompletedTask;
 
-        return Audience(hub, targetPcName).SendAsync(
+        return Audience(hub, targetPcNames).SendAsync(
             HubRoutes.Methods.ReceiveTeacherBroadcastSignal,
             new TeacherBroadcastSignal(broadcastId, active, paused));
     }
 
     private static IClientProxy Audience(
         IHubContext<LabKom.Teacher.Hub.TeacherHub> hub,
-        string? targetPcName) =>
-        targetPcName is null
-            ? hub.Clients.Group(HubRoutes.Groups.ForRole(HubRoutes.Roles.Desktop))
-            : hub.Clients.Group(
-                HubRoutes.Groups.ForPcRole(targetPcName, HubRoutes.Roles.Desktop));
+        IReadOnlyCollection<string>? targetPcNames)
+    {
+        if (targetPcNames is null)
+        {
+            return hub.Clients.Group(
+                HubRoutes.Groups.ForRole(HubRoutes.Roles.Desktop));
+        }
 
-    private void RaiseStateChanged() => StateChanged?.Invoke(this, EventArgs.Empty);
+        var groups = targetPcNames
+            .Select(pcName => HubRoutes.Groups.ForPcRole(
+                pcName,
+                HubRoutes.Roles.Desktop))
+            .ToArray();
+        return groups.Length == 1
+            ? hub.Clients.Group(groups[0])
+            : hub.Clients.Groups(groups);
+    }
+
+    private static string[] NormalizeTargets(
+        IEnumerable<string> targetPcNames)
+    {
+        ArgumentNullException.ThrowIfNull(targetPcNames);
+        var targets = targetPcNames
+            .Select(pcName => pcName?.Trim() ?? string.Empty)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(pcName => pcName, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (targets.Length == 0
+            || targets.Any(pcName => !HubSecurity.IsValidPcName(pcName)))
+        {
+            throw new ArgumentException(
+                "Audience broadcast wajib berisi nama PC yang valid.",
+                nameof(targetPcNames));
+        }
+
+        return targets;
+    }
+
+    private void RaiseStateChanged() =>
+        StateChanged?.Invoke(this, EventArgs.Empty);
 
     public void Dispose()
     {

@@ -3,6 +3,7 @@ using LabKom.Shared.Contracts;
 using LabKom.Shared.Devices;
 using LabKom.Shared.Discovery;
 using LabKom.Shared.Hub;
+using LabKom.Shared.Security;
 using LabKom.Student.Desktop.Services;
 using LabKom.Student.Desktop.Services.Capture;
 using LabKom.Student.Desktop.Workers;
@@ -16,10 +17,17 @@ public partial class App : Application
 {
     private IHost? _host;
     private DesktopHubClient? _hub;
+    private AttentionRecoveryState? _recoveryState;
+    private AttentionRecoveryWorker? _recoveryWorker;
     private OverlayWindow? _overlay;
     private BroadcastWindow? _broadcast;
     private ChatWindow? _chat;
+    private LessonWindow? _lesson;
     private KeyboardHook? _hook;
+    private KeyboardActivityMeter? _keyboardActivity;
+    private RemoteSessionController? _remoteSessions;
+    private RemoteEmergencyHotkey? _remoteHotkey;
+    private RemoteSessionBanner? _remoteBanner;
     private readonly List<ChatMessage> _chatHistory = new();
     private bool _attentionActive;
     private bool _broadcastActive;
@@ -45,9 +53,18 @@ public partial class App : Application
             .AddJsonFile("appsettings.Local.json", optional: true)
             .AddEnvironmentVariables();
 
-        var sharedSecret = Environment.GetEnvironmentVariable("LABKOM_SHARED_SECRET")
-                           ?? builder.Configuration["Desktop:SharedSecret"];
-        if (!HubSecurity.IsStrongSecret(sharedSecret))
+        string? sharedSecret;
+        try
+        {
+            sharedSecret = ProvisionedSecretStore.Resolve(
+                builder.Configuration["Desktop:SharedSecret"]);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            sharedSecret = builder.Configuration["Desktop:SharedSecret"];
+        }
+        var authentication = DeviceCredentialStore.Resolve(sharedSecret);
+        if (!HubSecurity.IsStrongSecret(authentication.Secret))
         {
             MessageBox.Show(
                 $"LABKOM_SHARED_SECRET wajib diisi minimal {HubSecurity.MinimumSecretLength} karakter.",
@@ -57,35 +74,170 @@ public partial class App : Application
             Shutdown(-1);
             return;
         }
+        builder.Configuration["Desktop:SharedSecret"] = sharedSecret;
 
         builder.Services.AddSingleton<MachineIdentity>();
         builder.Services.AddSingleton<TeacherEndpointStore>();
         builder.Services.AddSingleton<CaptureProfileState>();
-        builder.Services.AddSingleton<IScreenCaptureSource, GdiScreenCapture>();
+        builder.Services.AddSingleton<GdiScreenCapture>();
+        builder.Services.AddSingleton<IScreenCaptureSource, DxgiScreenCapture>();
+        builder.Services.AddSingleton<AdaptiveStreamController>();
         builder.Services.AddSingleton<ActivityMonitor>();
+        builder.Services.AddSingleton<KeyboardActivityMeter>();
         builder.Services.AddSingleton<FileDownloader>();
+        builder.Services.AddSingleton<FileCollectionClient>();
         builder.Services.AddSingleton<DesktopHubClient>();
+        builder.Services.AddSingleton<AttentionRecoveryState>();
+        builder.Services.AddSingleton<AttentionRecoveryWorker>();
+        builder.Services.AddSingleton<RemoteSessionController>();
+        builder.Services.AddSingleton<RemoteInputExecutor>();
+        builder.Services.AddSingleton<RemoteEmergencyHotkey>();
+        builder.Services.AddHostedService(provider =>
+            provider.GetRequiredService<AttentionRecoveryWorker>());
         builder.Services.AddHostedService<DiscoveryListener>();
         builder.Services.AddHostedService<DesktopConnectionWorker>();
         builder.Services.AddHostedService<ScreenStreamWorker>();
         builder.Services.AddHostedService<ActivityWorker>();
+        builder.Services.AddHostedService<RemoteSessionExpiryWorker>();
 
         _host = builder.Build();
 
         _hub = _host.Services.GetRequiredService<DesktopHubClient>();
+        _hub.ClassroomStateReceived += OnClassroomStateReceived;
         _hub.AttentionReceived += OnAttentionReceived;
         _hub.BroadcastSignalReceived += OnBroadcastSignalReceived;
         _hub.TeacherFrameReceived += OnTeacherFrameReceived;
         _hub.ChatReceived += OnChatReceived;
+        _hub.LessonReceived += OnLessonReceived;
+        _recoveryState = _host.Services.GetRequiredService<AttentionRecoveryState>();
+        _recoveryWorker = _host.Services.GetRequiredService<AttentionRecoveryWorker>();
+        _recoveryWorker.RecoveryTriggered += OnRecoveryTriggered;
+        _remoteSessions = _host.Services.GetRequiredService<RemoteSessionController>();
+        _remoteSessions.StatusChanged += OnRemoteSessionStatusChanged;
+        _remoteHotkey = _host.Services.GetRequiredService<RemoteEmergencyHotkey>();
+        _remoteHotkey.Pressed += OnRemoteEmergencyRelease;
+
 
         _hook = new KeyboardHook();
+        _keyboardActivity = _host.Services
+            .GetRequiredService<KeyboardActivityMeter>();
+        _keyboardActivity.Start();
         await _host.StartAsync();
     }
 
+    private void OnLessonReceived(
+        object? sender,
+        LessonSnapshot lesson) =>
+        Dispatcher.Invoke(() =>
+        {
+            if (lesson.Phase == LessonPhase.Ended)
+            {
+                _lesson?.Apply(lesson);
+                return;
+            }
+
+            if (_lesson is null)
+            {
+                _lesson = new LessonWindow(
+                    Environment.MachineName,
+                    lesson,
+                    submission => _hub!.SubmitRegistrationAsync(submission),
+                    submission => _hub!.SubmitAssessmentAsync(submission));
+                _lesson.Closed += (_, _) => _lesson = null;
+                _lesson.Show();
+            }
+            else
+            {
+                _lesson.Apply(lesson);
+            }
+
+            _ = _lesson.Activate();
+        });
+
+
+    private void OnClassroomStateReceived(
+        object? sender,
+        ClassroomStateSnapshot snapshot) =>
+        Dispatcher.Invoke(() =>
+        {
+            if (IsEmergencyUnlockActive())
+            {
+                ReleaseManagedUi();
+                return;
+            }
+            _attentionActive = snapshot.Attention?.Enabled == true;
+            _recoveryState?.SetAttention(
+                _attentionActive,
+                snapshot.Attention?.CommandId,
+                DateTimeOffset.UtcNow);
+
+            if (snapshot.Broadcast is { Active: true } broadcast)
+            {
+                if (!string.Equals(
+                        _broadcastId,
+                        broadcast.BroadcastId,
+                        StringComparison.Ordinal))
+                {
+                    _lastTeacherFrameSequence = 0;
+                    _latestTeacherFrame = null;
+                }
+
+                _broadcastActive = true;
+                _broadcastPaused = broadcast.Paused;
+                _broadcastId = broadcast.BroadcastId;
+            }
+            else
+            {
+                _broadcastActive = false;
+                _broadcastPaused = false;
+                _broadcastId = null;
+                _lastTeacherFrameSequence = 0;
+                _latestTeacherFrame = null;
+            }
+
+            if (_attentionActive)
+            {
+                CloseBroadcastWindow();
+                CloseChatWindow();
+                ShowOverlay(snapshot.Attention!.Message);
+            }
+            else
+            {
+                CloseOverlayWindow();
+                if (_broadcastActive)
+                {
+                    CloseChatWindow();
+                    ShowBroadcastWindow();
+                }
+                else
+                {
+                    CloseBroadcastWindow();
+                }
+            }
+
+            UpdateHookState();
+        });
     private void OnAttentionReceived(object? sender, AttentionCommand command) =>
         Dispatcher.Invoke(() =>
         {
+            if (command.Enabled
+                && EmergencyUnlockStore.TryGetActive(
+                    DateTimeOffset.UtcNow,
+                    out var emergency))
+            {
+                ReleaseManagedUi();
+                _ = _hub?.ReportCommandResultAsync(
+                    command.CommandId,
+                    RemoteCommandKind.Attention,
+                    CommandExecutionState.Rejected,
+                    $"Emergency unlock admin aktif sampai {emergency.ExpiresAtUtc:O}");
+                return;
+            }
             _attentionActive = command.Enabled;
+            _recoveryState?.SetAttention(
+                command.Enabled,
+                command.CommandId,
+                DateTimeOffset.UtcNow);
             if (_attentionActive)
             {
                 CloseBroadcastWindow();
@@ -109,6 +261,11 @@ public partial class App : Application
     private void OnBroadcastSignalReceived(object? sender, TeacherBroadcastSignal signal) =>
         Dispatcher.Invoke(() =>
         {
+            if (IsEmergencyUnlockActive())
+            {
+                ReleaseManagedUi();
+                return;
+            }
             if (!signal.Active)
             {
                 if (!string.Equals(_broadcastId, signal.BroadcastId, StringComparison.Ordinal)) return;
@@ -145,6 +302,11 @@ public partial class App : Application
     private void OnTeacherFrameReceived(object? sender, TeacherFrame frame) =>
         Dispatcher.Invoke(() =>
         {
+            if (IsEmergencyUnlockActive())
+            {
+                ReleaseManagedUi();
+                return;
+            }
             if (string.Equals(_broadcastId, frame.BroadcastId, StringComparison.Ordinal)
                 && frame.SequenceNumber <= _lastTeacherFrameSequence)
             {
@@ -281,6 +443,94 @@ public partial class App : Application
         _chat = null;
     }
 
+    private void OnRecoveryTriggered(
+        object? sender,
+        AttentionRecoveryDecision decision) =>
+        Dispatcher.Invoke(() =>
+        {
+            ReleaseManagedUi();
+            if (decision.CommandId is not null)
+            {
+                _ = _hub?.ReportCommandResultAsync(
+                    decision.CommandId,
+                    RemoteCommandKind.Attention,
+                    CommandExecutionState.Applied,
+                    $"Auto-unlock recovery: {decision.Description}");
+            }
+        });
+    private void OnRemoteSessionStatusChanged(
+        object? sender,
+        RemoteSessionStatus status) =>
+        Dispatcher.Invoke(() =>
+        {
+            if (status.State == RemoteSessionState.Active
+                && _remoteSessions?.Current is { } session)
+            {
+                if (_remoteBanner is null)
+                {
+                    _remoteBanner = new RemoteSessionBanner();
+                    _remoteBanner.ReleaseRequested += OnRemoteBannerRelease;
+                }
+
+                _remoteBanner.SetSession(session);
+                if (!_remoteBanner.IsVisible) _remoteBanner.Show();
+                _remoteBanner.Topmost = true;
+                return;
+            }
+
+            CloseRemoteBanner();
+        });
+
+    private void OnRemoteBannerRelease(
+        object? sender,
+        EventArgs eventArgs) =>
+        ReleaseRemoteSession("Dilepas siswa dari banner");
+
+    private void OnRemoteEmergencyRelease(
+        object? sender,
+        EventArgs eventArgs) =>
+        Dispatcher.Invoke(() =>
+            ReleaseRemoteSession("Emergency release Ctrl+Alt+Q"));
+
+    private void ReleaseRemoteSession(string reason)
+    {
+        _remoteSessions?.EndLocal(
+            RemoteSessionState.EmergencyReleased,
+            reason);
+        CloseRemoteBanner();
+    }
+
+    private void CloseRemoteBanner()
+    {
+        if (_remoteBanner is null) return;
+        _remoteBanner.ReleaseRequested -= OnRemoteBannerRelease;
+        _remoteBanner.Close();
+        _remoteBanner = null;
+    }
+
+
+    private void ReleaseManagedUi()
+    {
+        _attentionActive = false;
+        _broadcastActive = false;
+        _broadcastPaused = false;
+        _broadcastId = null;
+        _lastTeacherFrameSequence = 0;
+        _latestTeacherFrame = null;
+        _recoveryState?.SetAttention(
+            active: false,
+            commandId: null,
+            DateTimeOffset.UtcNow);
+        CloseOverlayWindow();
+        CloseBroadcastWindow();
+        UpdateHookState();
+    }
+
+    private static bool IsEmergencyUnlockActive() =>
+        EmergencyUnlockStore.TryGetActive(
+            DateTimeOffset.UtcNow,
+            out _);
+
     private void UpdateHookState()
     {
         if (_attentionActive || _broadcastActive)
@@ -298,9 +548,25 @@ public partial class App : Application
         _attentionActive = false;
         _broadcastActive = false;
         _hook?.Dispose();
+        _keyboardActivity?.Dispose();
         CloseOverlayWindow();
         CloseBroadcastWindow();
         CloseChatWindow();
+        if (_lesson is not null)
+        {
+            _lesson.Close();
+            _lesson = null;
+        }
+        if (_hub is not null) _hub.LessonReceived -= OnLessonReceived;
+        CloseRemoteBanner();
+        if (_remoteSessions is not null)
+        {
+            _remoteSessions.StatusChanged -= OnRemoteSessionStatusChanged;
+        }
+        if (_remoteHotkey is not null)
+        {
+            _remoteHotkey.Pressed -= OnRemoteEmergencyRelease;
+        }
 
         if (_host is not null)
         {

@@ -1,4 +1,5 @@
 using LabKom.Shared.Hub;
+using LabKom.Shared.Security;
 using LabKom.Teacher.Hub;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -25,8 +26,16 @@ public class HubHostService : IHostedService
     private readonly TeacherCertificateProvider _certificate;
     private readonly HubContextHolder _holder;
     private readonly FileDistributionService _files;
+    private readonly FileCollectionService _fileCollection;
     private readonly ActivityFeed _feed;
     private readonly ILoggerFactory _loggerFactory;
+    private readonly AttentionStateStore _attentionState;
+    private readonly ClassPolicyStateStore _policyState;
+    private readonly ClassroomSessionIdentity _sessionIdentity;
+    private readonly ClassroomLessonService _lessons;
+    private readonly TeacherScreenBroadcaster _screenBroadcaster;
+    private readonly TeacherAuthorizationService _authorization;
+    private readonly TelemetryRegistry _telemetry;
     private WebApplication? _app;
 
     public HubHostService(
@@ -35,7 +44,15 @@ public class HubHostService : IHostedService
         TeacherCertificateProvider certificate,
         HubContextHolder holder,
         FileDistributionService files,
+        FileCollectionService fileCollection,
         ActivityFeed feed,
+        AttentionStateStore attentionState,
+        ClassPolicyStateStore policyState,
+        ClassroomSessionIdentity sessionIdentity,
+        ClassroomLessonService lessons,
+        TeacherScreenBroadcaster screenBroadcaster,
+        TeacherAuthorizationService authorization,
+        TelemetryRegistry telemetry,
         ILoggerFactory loggerFactory)
     {
         _config = config;
@@ -43,8 +60,16 @@ public class HubHostService : IHostedService
         _certificate = certificate;
         _holder = holder;
         _files = files;
+        _fileCollection = fileCollection;
         _feed = feed;
         _loggerFactory = loggerFactory;
+        _attentionState = attentionState;
+        _policyState = policyState;
+        _sessionIdentity = sessionIdentity;
+        _lessons = lessons;
+        _screenBroadcaster = screenBroadcaster;
+        _authorization = authorization;
+        _telemetry = telemetry;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -57,6 +82,10 @@ public class HubHostService : IHostedService
         {
             throw new InvalidOperationException("LABKOM_SHARED_SECRET/Teacher:SharedSecret wajib diisi minimal 32 karakter.");
         }
+        var classroomId = _config["Security:ClassroomId"] ?? string.Empty;
+        var allowLegacy = _config.GetValue(
+            "Security:AllowLegacySharedSecret",
+            true);
 
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
@@ -64,6 +93,14 @@ public class HubHostService : IHostedService
         builder.Services.AddSingleton(_config);
         builder.Services.AddSingleton(_registry);
         builder.Services.AddSingleton(_feed);
+        builder.Services.AddSingleton(_fileCollection);
+        builder.Services.AddSingleton(_attentionState);
+        builder.Services.AddSingleton(_policyState);
+        builder.Services.AddSingleton(_sessionIdentity);
+        builder.Services.AddSingleton(_lessons);
+        builder.Services.AddSingleton(_screenBroadcaster);
+        builder.Services.AddSingleton(_authorization);
+        builder.Services.AddSingleton(_telemetry);
         builder.Services.AddSignalR(options =>
         {
             options.EnableDetailedErrors = false;
@@ -83,7 +120,32 @@ public class HubHostService : IHostedService
             if (context.Request.Path.StartsWithSegments("/files"))
             {
                 var supplied = context.Request.Headers[HubSecurity.HeaderName].ToString();
-                if (!HubSecurity.IsValidSecret(sharedSecret, supplied))
+                var deviceId = context.Request.Headers[HubSecurity.DeviceIdHeaderName].ToString();
+                var pcName = context.Request.Headers[HubSecurity.PcNameHeaderName].ToString();
+                var rawVersion = context.Request.Headers[HubSecurity.KeyVersionHeaderName].ToString();
+                int? keyVersion = int.TryParse(
+                    rawVersion,
+                    System.Globalization.NumberStyles.Integer,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out var parsedVersion)
+                        ? parsedVersion
+                        : null;
+                var policy = KeyRotationPolicyStore.ReadOrDefault();
+                var authentication = Guid.TryParseExact(classroomId, "N", out _)
+                    ? DeviceAuthentication.Validate(
+                        sharedSecret,
+                        classroomId,
+                        supplied,
+                        deviceId,
+                        pcName,
+                        keyVersion,
+                        policy.CurrentVersion,
+                        policy.AcceptedPreviousVersions,
+                        allowLegacy)
+                    : allowLegacy && HubSecurity.IsValidSecret(sharedSecret, supplied)
+                        ? new DeviceAuthenticationResult(true, true, null, null, "legacy-no-classroom-id")
+                        : DeviceAuthenticationResult.Rejected("classroom-id-missing");
+                if (!authentication.Success)
                 {
                     context.Response.StatusCode = StatusCodes.Status401Unauthorized;
                     return;
