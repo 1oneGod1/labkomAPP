@@ -80,7 +80,16 @@ public partial class App : Application
         builder.Services.AddSingleton<TeacherEndpointStore>();
         builder.Services.AddSingleton<CaptureProfileState>();
         builder.Services.AddSingleton<GdiScreenCapture>();
-        builder.Services.AddSingleton<IScreenCaptureSource, DxgiScreenCapture>();
+        builder.Services.AddSingleton<DxgiScreenCapture>();
+        builder.Services.AddSingleton<IScreenCaptureSource>(provider =>
+        {
+            var preferGdi = builder.Configuration.GetValue<bool>("Capture:PreferGdiCapture", true);
+            if (preferGdi)
+            {
+                return provider.GetRequiredService<GdiScreenCapture>();
+            }
+            return provider.GetRequiredService<DxgiScreenCapture>();
+        });
         builder.Services.AddSingleton<AdaptiveStreamController>();
         builder.Services.AddSingleton<ActivityMonitor>();
         builder.Services.AddSingleton<KeyboardActivityMeter>();
