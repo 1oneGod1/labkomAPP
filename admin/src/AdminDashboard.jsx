@@ -9,8 +9,10 @@ import {
   ClipboardList, FilterX, ThumbsUp, ThumbsDown, Eye, EyeOff, Maximize2,
   PowerOff, Play, Radio, Cpu, Activity, MessageCircle,
   BookOpen, FileText, FolderOpen, LayoutGrid, List, Upload, Trophy,
+  FileSpreadsheet, Download,
 } from 'lucide-react';
 import StudentModal from './components/StudentModal.jsx';
+import ImportStudentModal from './components/ImportStudentModal.jsx';
 import ActivityMonitor from './components/ActivityMonitor.jsx';
 import ChatPanel from './components/ChatPanel.jsx';
 import ScreenShareAdmin from './components/ScreenShareAdmin.jsx';
@@ -784,6 +786,7 @@ export default function AdminDashboard() {
   const [stuLoading,   setStuLoading]   = useState(false);
   const [stuSearch,    setStuSearch]    = useState('');
   const [stuModal,     setStuModal]     = useState(null); // null | 'add' | student obj
+  const [showImportModal, setShowImportModal] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
 
   const fetchStudents = useCallback(async () => {
@@ -2068,12 +2071,20 @@ export default function AdminDashboard() {
             className="w-full pl-10 pr-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
           />
         </div>
-        <button
-          onClick={() => setStuModal('add')}
-          className="w-full sm:w-auto px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg flex items-center justify-center space-x-2 font-medium transition-colors"
-        >
-          <Plus className="w-4 h-4" /><span>Tambah Siswa</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+          <button
+            onClick={() => setShowImportModal(true)}
+            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg flex items-center justify-center space-x-2 font-medium transition-colors text-sm shadow-sm"
+          >
+            <FileSpreadsheet className="w-4 h-4" /><span>Import Excel / CSV</span>
+          </button>
+          <button
+            onClick={() => setStuModal('add')}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg flex items-center justify-center space-x-2 font-medium transition-colors text-sm shadow-sm"
+          >
+            <Plus className="w-4 h-4" /><span>Tambah Siswa</span>
+          </button>
+        </div>
       </div>
       {stuLoading ? (
         <div className="flex items-center justify-center py-24"><Loader2 className="w-8 h-8 text-blue-500 animate-spin" /></div>
@@ -2974,6 +2985,17 @@ export default function AdminDashboard() {
           student={stuModal === 'add' ? null : stuModal}
           onClose={() => setStuModal(null)}
           onSaved={() => { setStuModal(null); fetchStudents(); showToast('Data siswa berhasil disimpan.'); }}
+        />
+      )}
+
+      {/* ─── MODAL: Import Data Login Siswa (Excel/CSV) ────────────────────── */}
+      {showImportModal && (
+        <ImportStudentModal
+          onClose={() => setShowImportModal(false)}
+          onImported={() => {
+            fetchStudents();
+            showToast('Data siswa berhasil di-import.');
+          }}
         />
       )}
 
